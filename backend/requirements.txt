@@ -1,0 +1,6 @@
+fastapi==0.115.12
+uvicorn==0.34.0
+websockets==14.2
+musicbrainzngs==0.7.1
+discid==1.2.0
+httpx==0.28.1

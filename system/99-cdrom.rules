@@ -1,0 +1,24 @@
+# /etc/udev/rules.d/99-cdrom.rules
+# Trigger CD player backend on disc insertion and ejection.
+#
+# Install: sudo cp 99-cdrom.rules /etc/udev/rules.d/
+#          sudo udevadm control --reload-rules
+#          sudo udevadm trigger
+
+# Match optical disc events only
+SUBSYSTEM!="block", GOTO="cdrom_end"
+KERNEL!="sr[0-9]*", GOTO="cdrom_end"
+
+# Always maintain /dev/cdrom symlink for any optical drive
+SYMLINK+="cdrom"
+
+# Disc inserted — enforce 1x speed first, then notify backend
+ENV{ID_CDROM_MEDIA}=="1", ENV{ID_CDROM_MEDIA_CD_AUDIO}=="1", \
+    RUN+="/usr/local/bin/cd-setspeed.sh", \
+    RUN+="/usr/local/bin/cd-inserted.sh"
+
+# Disc ejected (media gone)
+ENV{ID_CDROM_MEDIA}=="0", \
+    RUN+="/usr/local/bin/cd-ejected.sh"
+
+LABEL="cdrom_end"

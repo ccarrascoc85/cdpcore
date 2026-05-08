@@ -1,0 +1,35 @@
+[Unit]
+Description=CDPcore Roon Extension (Node.js)
+Documentation=https://github.com/ccarrascoc85/cdpcore
+After=network.target network-online.target cdpcore-backend.service
+Wants=network-online.target
+Requires=cdpcore-backend.service
+
+[Service]
+Type=simple
+User=cdplayer
+Group=cdplayer
+
+WorkingDirectory=/home/cdplayer/.config/cdpcore-extension
+
+Environment=NODE_ENV=production
+Environment=CD_BACKEND_URL=http://localhost:8000
+Environment=HOME=/home/cdplayer
+
+ExecStartPre=/bin/mkdir -p /home/cdplayer/.config/cdpcore-extension
+ExecStart=/usr/bin/node /opt/cdpcore/extension/app.js
+
+Restart=always
+RestartSec=5
+
+NoNewPrivileges=yes
+PrivateTmp=no
+ProtectSystem=strict
+ReadWritePaths=/home/cdplayer /var/cache/cd-player
+
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=cdpcore-extension
+
+[Install]
+WantedBy=multi-user.target

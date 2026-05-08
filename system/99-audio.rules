@@ -1,0 +1,16 @@
+# /etc/udev/rules.d/99-audio.rules
+# Notify the CDPcore backend when a sound card is added or removed.
+#
+# Install:
+#   sudo cp 99-audio.rules /etc/udev/rules.d/
+#   sudo cp audio-device-change.sh /usr/local/bin/
+#   sudo chmod +x /usr/local/bin/audio-device-change.sh
+#   sudo udevadm control --reload-rules
+
+SUBSYSTEM!="sound", GOTO="audio_end"
+KERNEL!="card[0-9]*", GOTO="audio_end"
+
+ACTION=="add",    RUN+="/bin/systemd-run --no-block --collect /usr/local/bin/audio-device-change.sh add %k"
+ACTION=="remove", RUN+="/bin/systemd-run --no-block --collect /usr/local/bin/audio-device-change.sh remove %k"
+
+LABEL="audio_end"

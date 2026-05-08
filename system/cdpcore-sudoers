@@ -1,0 +1,35 @@
+# CDPcore — sudo rules for the appliance service user.
+# Deployed to /etc/sudoers.d/cdpcore by install.sh (mode 0440).
+#
+# Each line scopes one verb the backend or system page actually invokes.
+# Keeping the rules verb-specific instead of allowing the whole binary
+# means a code-execution foothold under cdplayer cannot pivot into
+# arbitrary nmcli / hostnamectl / systemctl operations.
+#
+# References:
+#   - service control: backend/main.py /system/action handler
+#   - network actions: backend/network.py
+#   - hostname:        backend/network.py:set_hostname
+#
+# To add a new privileged operation: add ONLY the specific verb here,
+# never broaden to the whole binary.
+
+cdplayer ALL=(root) NOPASSWD: \
+    /usr/bin/systemctl restart cdpcore-backend, \
+    /usr/bin/systemctl restart cdpcore-extension, \
+    /usr/bin/systemctl start   roonbridge, \
+    /usr/bin/systemctl stop    roonbridge, \
+    /usr/bin/systemctl restart roonbridge, \
+    /usr/bin/systemctl enable  roonbridge, \
+    /usr/bin/systemctl disable roonbridge, \
+    /usr/bin/systemctl reboot, \
+    /usr/bin/systemctl poweroff, \
+    /usr/local/bin/cdpcore-wifi-hidden *, \
+    /usr/bin/nmcli connection modify *, \
+    /usr/bin/nmcli connection up *, \
+    /usr/bin/nmcli connection delete *, \
+    /usr/bin/nmcli radio wifi on, \
+    /usr/bin/nmcli radio wifi off, \
+    /usr/bin/nmcli device wifi rescan, \
+    /usr/bin/nmcli device wifi connect *, \
+    /usr/bin/hostnamectl set-hostname *

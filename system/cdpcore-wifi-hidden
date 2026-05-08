@@ -1,0 +1,59 @@
+#!/bin/bash
+# cdpcore-wifi-hidden — create and activate a hidden WiFi connection profile.
+#
+# CDPcore uses this wrapper instead of calling `nmcli connection add` directly.
+# /etc/sudoers.d/cdpcore grants `sudo cdpcore-wifi-hidden <ssid>`, which is
+# the minimal privilege needed: this script can ONLY create 802-11 WiFi
+# profiles with the `hidden yes` flag — it cannot create VPN, bridge, or any
+# other NM connection type.
+#
+# Usage (invoked with sudo from the cdplayer service user):
+#   echo "<password>" | sudo /usr/local/bin/cdpcore-wifi-hidden <ssid>
+#   (omit the echo | prefix for open networks)
+#
+# Password is read from stdin, not from argv, so it never appears in the
+# process's argv (which would be briefly visible in /proc/<pid>/cmdline).
+#
+# Exit codes: 0 success, 1 error (details on stderr).
+set -euo pipefail
+
+if [[ $# -ne 1 ]]; then
+    echo "Usage: cdpcore-wifi-hidden <ssid>" >&2
+    exit 1
+fi
+
+SSID="$1"
+
+# Basic shape check — defense-in-depth; Python already validated before calling.
+if [[ -z "$SSID" || "${#SSID}" -gt 32 ]]; then
+    echo "cdpcore-wifi-hidden: SSID must be 1-32 characters" >&2
+    exit 1
+fi
+
+# Read password from stdin (empty string = open network; 2s timeout).
+IFS= read -r -t 2 PASSWORD 2>/dev/null || PASSWORD=""
+
+PROFILE="$SSID"
+
+# Remove any stale profile with the same name.
+nmcli connection delete "$PROFILE" 2>/dev/null || true
+
+# Create the hidden WiFi profile.
+if [[ -n "$PASSWORD" ]]; then
+    nmcli connection add \
+        type wifi \
+        con-name "$PROFILE" \
+        ssid "$SSID" \
+        "802-11-wireless.hidden" yes \
+        "wifi-sec.key-mgmt" wpa-psk \
+        "wifi-sec.psk" "$PASSWORD"
+else
+    nmcli connection add \
+        type wifi \
+        con-name "$PROFILE" \
+        ssid "$SSID" \
+        "802-11-wireless.hidden" yes
+fi
+
+# Activate.
+nmcli connection up "$PROFILE"

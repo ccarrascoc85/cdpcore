@@ -1,0 +1,473 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black">
+<meta name="theme-color" content="#1b1915">
+<link rel="icon" type="image/svg+xml" href="/favicon/favicon.svg">
+<link rel="icon" type="image/x-icon" href="/favicon.ico">
+<title>CDPcore · Roon</title>
+<style>
+*, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+:root {
+  --bg:         #1b1915;
+  --chassis:    #23201b;
+  --inset:      #1f1d17;
+  --amber:      #e8a028;
+  --amber-hi:   #f0b840;
+  --amber-dim:  #3d2a10;
+  --amber-glow: rgba(232,160,40,.22);
+  --seam:       #33302a;
+  --seam-hi:    #3f3d34;
+  --txt-hi:     #d8d0bc;
+  --txt-mid:    #8c8274;
+  --txt-lo:     #48433a;
+  --btn-face:   #2d2a22;
+  --btn-edge:   #3d382e;
+  --green:      #4a9e4a;
+  --red:        #b83c3c;
+}
+
+html { height: 100%; }
+body {
+  background: var(--bg);
+  color: var(--txt-hi);
+  font-family: -apple-system, BlinkMacSystemFont, 'Helvetica Neue', Arial, sans-serif;
+  min-height: 100dvh;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  padding: env(safe-area-inset-top,0) 0 env(safe-area-inset-bottom,24px);
+  user-select: none;
+  -webkit-tap-highlight-color: transparent;
+}
+
+.unit {
+  width: 100%;
+  max-width: 660px;
+  background: var(--chassis);
+  border: 1px solid #33302a;
+  border-top: 2px solid #3f3d34;
+  border-radius: 0 0 8px 8px;
+  overflow: hidden;
+  box-shadow: 0 2px 0 #1b1915, 0 8px 40px rgba(0,0,0,.8), 0 32px 64px rgba(0,0,0,.4);
+}
+
+.face-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 9px 18px 7px;
+  background: linear-gradient(180deg, #2d2a22 0%, #23201b 100%);
+  border-bottom: 1px solid var(--seam);
+}
+.face-brand {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  font-size: 8.5px;
+  letter-spacing: .28em;
+  text-transform: uppercase;
+  color: var(--txt-mid);
+  font-weight: 500;
+}
+.face-mark {
+  width: 14px;
+  height: 14px;
+  display: block;
+  flex-shrink: 0;
+  opacity: .88;
+}
+.face-model {
+  font-size: 10px;
+  letter-spacing: .18em;
+  text-transform: uppercase;
+  color: var(--txt-mid);
+  font-weight: 700;
+}
+.btn-icon {
+  background: none;
+  border: none;
+  color: var(--txt-mid);
+  font-size: 14px;
+  cursor: pointer;
+  padding: 4px 3px;
+  opacity: .7;
+  text-decoration: none;
+  display: flex;
+  align-items: center;
+  line-height: 1;
+}
+.btn-icon:hover { opacity: 1; color: var(--amber); }
+.btn-icon:active { opacity: .4; }
+
+.sys-body {
+  padding: 14px 18px 20px;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.card {
+  background: var(--inset);
+  border: 1px solid var(--seam);
+  border-radius: 4px;
+  overflow: hidden;
+}
+.card-title {
+  padding: 5px 12px 4px;
+  background: #1c1a15;
+  border-bottom: 1px solid var(--seam);
+  font-size: 8px;
+  letter-spacing: .30em;
+  text-transform: uppercase;
+  color: var(--txt-mid);
+  font-weight: 600;
+}
+
+.row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 6px 12px;
+  border-bottom: 1px solid var(--txt-lo);
+  gap: 8px;
+  min-height: 32px;
+}
+.row:last-child { border-bottom: none; }
+.row-label {
+  font-size: 11px;
+  color: var(--txt-mid);
+  flex-shrink: 0;
+  min-width: 120px;
+}
+.row-value {
+  font-size: 12px;
+  color: var(--txt-hi);
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+  word-break: break-all;
+}
+
+.dot {
+  display: inline-block;
+  width: 7px; height: 7px;
+  border-radius: 50%;
+  margin-right: 7px;
+  flex-shrink: 0;
+  vertical-align: middle;
+}
+.dot-ok   { background: var(--green); box-shadow: 0 0 5px var(--green); }
+.dot-bad  { background: var(--red);   box-shadow: 0 0 5px var(--red);   }
+.dot-unkn { background: var(--txt-lo); }
+
+.actions {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 8px;
+  padding: 10px 12px;
+}
+.btn-action {
+  background: var(--btn-face);
+  border: 1px solid var(--btn-edge);
+  border-radius: 3px;
+  color: var(--txt-hi);
+  font-size: 11px;
+  font-family: inherit;
+  letter-spacing: .04em;
+  padding: 9px 10px;
+  cursor: pointer;
+  text-align: center;
+  transition: background .12s, color .12s;
+}
+.btn-action:hover  { background: var(--seam-hi); color: var(--amber); }
+.btn-action:active { opacity: .5; }
+.btn-action.full   { grid-column: 1 / -1; }
+.btn-action.danger { color: #d88a7a; border-color: #5a2820; }
+.btn-action.danger:hover { background: #2a1612; color: var(--red); }
+
+.cfg-section {
+  padding: 10px 12px;
+  border-bottom: 1px solid var(--txt-lo);
+}
+.cfg-section:last-child { border-bottom: none; }
+.cfg-label {
+  font-size: 9px;
+  letter-spacing: .18em;
+  text-transform: uppercase;
+  color: var(--txt-mid);
+  font-weight: 600;
+  margin-bottom: 8px;
+}
+.net-input {
+  background: var(--inset);
+  border: 1px solid var(--seam-hi);
+  border-radius: 3px;
+  color: var(--txt-hi);
+  font-size: 12px;
+  font-family: inherit;
+  padding: 7px 10px;
+  width: 100%;
+  outline: none;
+}
+.net-input:focus { border-color: var(--amber-dim); }
+.net-input::placeholder { color: var(--txt-lo); }
+
+.toast {
+  position: fixed;
+  bottom: 20px; left: 50%;
+  transform: translateX(-50%);
+  background: #2d2a22;
+  border: 1px solid var(--amber-dim);
+  color: var(--amber);
+  font-size: 11px;
+  letter-spacing: .06em;
+  padding: 8px 20px;
+  border-radius: 3px;
+  opacity: 0;
+  transition: opacity .2s;
+  pointer-events: none;
+  z-index: 99;
+  white-space: nowrap;
+}
+.toast.show { opacity: 1; }
+
+html.light {
+  --bg: #c8c4bc; --chassis: #dedad2; --inset: #ccc8c0;
+  --seam: #b8b4ac; --seam-hi: #c4c0b8;
+  --txt-hi: #2a2820; --txt-mid: #6a6058; --txt-lo: #b4b0a8;
+  --btn-face: #d4d0c8; --btn-edge: #c0bcb4;
+}
+html.light .face-header { background: linear-gradient(180deg, #dedad2 0%, #c8c4bc 100%); }
+html.light .card-title  { background: #d0ccc4; }
+
+@media (max-width: 480px) {
+  .sys-body { padding: 10px 12px 18px; }
+  .row-label { min-width: 100px; }
+}
+</style>
+<script src="/admin_gate.js"></script>
+</head>
+<body>
+<div class="unit">
+
+  <div class="face-header">
+    <div class="face-brand">
+      <a class="btn-icon" href="/system" title="Back to System">&#8592;</a>
+      <img class="face-mark" src="/favicon/symbol.svg" alt="">
+      <span>Roon</span>
+    </div>
+    <span class="face-model">Management</span>
+    <button class="btn-icon" id="btn-theme" title="Light / dark mode">☀</button>
+  </div>
+
+  <div class="sys-body">
+
+    <!-- Roon Bridge -->
+    <div class="card">
+      <div class="card-title">Roon Bridge</div>
+      <div class="row">
+        <span class="row-label">
+          <span class="dot dot-unkn" id="dot-bridge"></span>Status
+        </span>
+        <span class="row-value" id="val-bridge-status">—</span>
+      </div>
+      <div class="row">
+        <span class="row-label">PID</span>
+        <span class="row-value" id="val-bridge-pid">—</span>
+      </div>
+      <div class="row">
+        <span class="row-label">Autostart</span>
+        <span class="row-value" id="val-bridge-enabled">—</span>
+      </div>
+      <div class="actions">
+        <button class="btn-action" id="btn-bridge-toggle" onclick="bridgeToggle()">—</button>
+        <button class="btn-action" onclick="bridgeAction('roon_bridge_restart')">Restart</button>
+        <button class="btn-action" id="btn-bridge-autostart" onclick="bridgeAutostartToggle()">—</button>
+      </div>
+    </div>
+
+    <!-- Roon Extension -->
+    <div class="card">
+      <div class="card-title">Roon Extension</div>
+      <div class="row">
+        <span class="row-label">
+          <span class="dot dot-unkn" id="dot-ext"></span>Service
+        </span>
+        <span class="row-value" id="val-ext-status">—</span>
+      </div>
+      <div class="row">
+        <span class="row-label">Roon Core</span>
+        <span class="row-value" id="val-ext-core">—</span>
+      </div>
+      <div class="actions">
+        <button class="btn-action full" onclick="bridgeAction('restart_extension')">Restart Extension</button>
+      </div>
+    </div>
+
+    <!-- Zone Configuration -->
+    <div class="card">
+      <div class="card-title">Zone Configuration</div>
+      <div class="cfg-section">
+        <div class="cfg-label">Roon Zone</div>
+        <div style="display:flex;gap:8px">
+          <input class="net-input" type="text" id="inp-zone"
+                 placeholder="Name of the zone connected to your DAC"
+                 autocapitalize="none" autocorrect="off" spellcheck="false">
+          <button class="btn-action" style="white-space:nowrap;padding:7px 16px"
+                  onclick="saveZone()">Apply</button>
+        </div>
+        <div style="margin-top:8px;font-size:9px;color:var(--txt-lo);line-height:1.5">
+          Must match exactly the zone name shown in your Roon app.
+          The extension reloads this setting automatically — no restart required.
+        </div>
+      </div>
+    </div>
+
+  </div>
+</div>
+
+<div class="toast" id="toast"></div>
+
+<script>
+/* ── Theme ───────────────────────────────────────────────── */
+function applyTheme(light) {
+  document.documentElement.classList.toggle('light', light);
+  document.getElementById('btn-theme').textContent = light ? '☾' : '☀';
+  document.querySelector('meta[name="theme-color"]').content = light ? '#c8c4bc' : '#1b1915';
+}
+applyTheme(localStorage.getItem('cdp-theme') === 'light');
+document.getElementById('btn-theme').addEventListener('click', () => {
+  const light = !document.documentElement.classList.contains('light');
+  localStorage.setItem('cdp-theme', light ? 'light' : 'dark');
+  applyTheme(light);
+});
+
+/* ── Toast ───────────────────────────────────────────────── */
+let _tt = null;
+function toast(msg, ms = 3000) {
+  const el = document.getElementById('toast');
+  el.textContent = msg;
+  el.classList.add('show');
+  clearTimeout(_tt);
+  _tt = setTimeout(() => el.classList.remove('show'), ms);
+}
+
+/* ── State ───────────────────────────────────────────────── */
+let _bridgeActive  = false;
+let _bridgeEnabled = false;
+
+/* ── Load ────────────────────────────────────────────────── */
+async function refresh() {
+  try {
+    const r = await fetch('/system/roon/info');
+    if (!r.ok) return;
+    const d = await r.json();
+
+    /* Roon Bridge */
+    const rb = d.roon_bridge || {};
+    const bridgeOk = rb.active === 'active';
+    _bridgeActive  = bridgeOk;
+    _bridgeEnabled = rb.enabled === 'enabled';
+
+    document.getElementById('dot-bridge').className = 'dot ' + (bridgeOk ? 'dot-ok' : 'dot-bad');
+    const bsEl = document.getElementById('val-bridge-status');
+    bsEl.textContent = rb.active || '—';
+    bsEl.style.color = bridgeOk ? 'var(--green)' : 'var(--red)';
+
+    const pid = rb.pid && rb.pid !== '0' ? rb.pid : '—';
+    document.getElementById('val-bridge-pid').textContent = pid;
+
+    const enEl = document.getElementById('val-bridge-enabled');
+    enEl.textContent  = _bridgeEnabled ? 'Enabled' : 'Disabled';
+    enEl.style.color  = _bridgeEnabled ? 'var(--green)' : 'var(--txt-mid)';
+
+    document.getElementById('btn-bridge-toggle').textContent    = bridgeOk ? 'Stop' : 'Start';
+    document.getElementById('btn-bridge-autostart').textContent = _bridgeEnabled ? 'Disable autostart' : 'Enable autostart';
+
+    /* Extension */
+    const ext = d.extension || {};
+    const extOk = ext.active === 'active';
+    document.getElementById('dot-ext').className = 'dot ' + (extOk ? 'dot-ok' : ext.active === 'unknown' ? 'dot-unkn' : 'dot-bad');
+    const esEl = document.getElementById('val-ext-status');
+    esEl.textContent = ext.active || '—';
+    esEl.style.color = extOk ? 'var(--green)' : ext.active === 'unknown' ? 'var(--txt-mid)' : 'var(--red)';
+
+    const coreEl = document.getElementById('val-ext-core');
+    if (ext.paired && ext.core_name) {
+      coreEl.textContent = ext.core_name;
+      coreEl.style.color = 'var(--green)';
+    } else {
+      coreEl.textContent = ext.paired ? 'Paired' : 'Not paired';
+      coreEl.style.color = 'var(--txt-mid)';
+    }
+
+    /* Zone */
+    const inp = document.getElementById('inp-zone');
+    if (!inp.dataset.dirty) {
+      inp.placeholder = (d.settings || {}).zone_name || 'Not configured';
+    }
+  } catch { /* keep last */ }
+}
+
+/* ── Roon Bridge actions ─────────────────────────────────── */
+async function bridgeAction(name) {
+  try {
+    await fetch('/system/action', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ action: name }),
+    });
+    setTimeout(refresh, 1500);
+  } catch { toast('Request failed', 3000); }
+}
+
+async function bridgeToggle() {
+  const action = _bridgeActive ? 'roon_bridge_stop' : 'roon_bridge_start';
+  if (_bridgeActive && !confirm('Stop Roon Bridge?')) return;
+  await bridgeAction(action);
+  toast(_bridgeActive ? 'Stopping Roon Bridge…' : 'Starting Roon Bridge…', 3000);
+}
+
+async function bridgeAutostartToggle() {
+  const action = _bridgeEnabled ? 'roon_bridge_disable' : 'roon_bridge_enable';
+  await bridgeAction(action);
+  toast(_bridgeEnabled ? 'Autostart disabled' : 'Autostart enabled', 3000);
+}
+
+/* ── Zone ────────────────────────────────────────────────── */
+document.getElementById('inp-zone').addEventListener('input', function() {
+  this.dataset.dirty = this.value ? '1' : '';
+});
+
+async function saveZone() {
+  const inp  = document.getElementById('inp-zone');
+  const name = inp.value.trim();
+  if (!name) { toast('Enter a zone name', 3000); return; }
+  try {
+    const r = await fetch('/system/roon/settings', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ zone_name: name }),
+    });
+    const d = await r.json();
+    if (d.ok) {
+      toast('Zone set to "' + name + '" — applied automatically', 4000);
+      inp.placeholder   = name;
+      inp.value         = '';
+      inp.dataset.dirty = '';
+    } else {
+      toast('Error: ' + (d.error || 'unknown'), 4000);
+    }
+  } catch { toast('Request failed', 3000); }
+}
+
+/* ── Init ────────────────────────────────────────────────── */
+refresh();
+setInterval(refresh, 5000);
+</script>
+</body>
+</html>

@@ -1,0 +1,782 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black">
+<meta name="theme-color" content="#1b1915">
+<link rel="icon" type="image/svg+xml" href="/favicon/favicon.svg">
+<link rel="icon" type="image/x-icon" href="/favicon.ico">
+<title>CDPcore · System</title>
+<style>
+*, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+:root {
+  --bg:         #1b1915;
+  --chassis:    #23201b;
+  --inset:      #1f1d17;
+  --vfd-bg:     #04060a;
+  --amber:      #e8a028;
+  --amber-hi:   #f0b840;
+  --amber-dim:  #3d2a10;
+  --amber-glow: rgba(232,160,40,.22);
+  --seam:       #33302a;
+  --seam-hi:    #3f3d34;
+  --txt-hi:     #d8d0bc;
+  --txt-mid:    #8c8274;
+  --txt-lo:     #48433a;
+  --btn-face:   #2d2a22;
+  --btn-edge:   #3d382e;
+  --green:      #4a9e4a;
+  --red:        #b83c3c;
+}
+
+html { height: 100%; }
+body {
+  background: var(--bg);
+  color: var(--txt-hi);
+  font-family: -apple-system, BlinkMacSystemFont, 'Helvetica Neue', Arial, sans-serif;
+  min-height: 100dvh;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  padding: env(safe-area-inset-top,0) 0 env(safe-area-inset-bottom,24px);
+  user-select: none;
+  -webkit-tap-highlight-color: transparent;
+}
+
+/* ── Chassis ─────────────────────────────────────────────── */
+.unit {
+  width: 100%;
+  max-width: 660px;
+  background: var(--chassis);
+  border: 1px solid #33302a;
+  border-top: 2px solid #3f3d34;
+  border-radius: 0 0 8px 8px;
+  overflow: hidden;
+  box-shadow:
+    0 2px 0 #1b1915,
+    0 8px 40px rgba(0,0,0,.8),
+    0 32px 64px rgba(0,0,0,.4);
+}
+
+/* ── Header ──────────────────────────────────────────────── */
+.face-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 9px 18px 7px;
+  background: linear-gradient(180deg, #2d2a22 0%, #23201b 100%);
+  border-bottom: 1px solid var(--seam);
+}
+.face-brand {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  font-size: 8.5px;
+  letter-spacing: .28em;
+  text-transform: uppercase;
+  color: var(--txt-mid);
+  font-weight: 500;
+}
+.face-mark {
+  width: 14px;
+  height: 14px;
+  display: block;
+  flex-shrink: 0;
+  opacity: .88;
+}
+.face-model {
+  font-size: 10px;
+  letter-spacing: .18em;
+  text-transform: uppercase;
+  color: var(--txt-mid);
+  font-weight: 700;
+}
+.btn-icon {
+  background: none;
+  border: none;
+  color: var(--txt-mid);
+  font-size: 14px;
+  cursor: pointer;
+  padding: 4px 3px;
+  opacity: .7;
+  text-decoration: none;
+  display: flex;
+  align-items: center;
+  line-height: 1;
+}
+.btn-icon:hover { opacity: 1; color: var(--amber); }
+.btn-icon:active { opacity: .4; }
+
+/* ── Body ────────────────────────────────────────────────── */
+.sys-body {
+  padding: 14px 18px 20px;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+/* ── Cards ───────────────────────────────────────────────── */
+.card {
+  background: var(--inset);
+  border: 1px solid var(--seam);
+  border-radius: 4px;
+  overflow: hidden;
+}
+.card-title {
+  padding: 5px 12px 4px;
+  background: #1c1a15;
+  border-bottom: 1px solid var(--seam);
+  font-size: 8px;
+  letter-spacing: .30em;
+  text-transform: uppercase;
+  color: var(--txt-mid);
+  font-weight: 600;
+}
+
+/* ── Info rows ───────────────────────────────────────────── */
+.row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 6px 12px;
+  border-bottom: 1px solid var(--txt-lo);
+  gap: 8px;
+  min-height: 32px;
+}
+.row:last-child { border-bottom: none; }
+.row-label {
+  font-size: 11px;
+  color: var(--txt-mid);
+  flex-shrink: 0;
+  min-width: 120px;
+}
+.row-value {
+  font-size: 12px;
+  color: var(--txt-hi);
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+  word-break: break-all;
+}
+.row-value.amber { color: var(--amber); }
+.row-value.warm  { color: #d07830; }
+.row-value.hot   { color: var(--red); }
+
+/* ── Bar ─────────────────────────────────────────────────── */
+.bar-wrap {
+  flex: 1;
+  height: 3px;
+  background: var(--seam);
+  border-radius: 2px;
+  overflow: hidden;
+  margin: 0 8px;
+}
+.bar-fill {
+  height: 100%;
+  background: var(--amber);
+  border-radius: 2px;
+  transition: width .6s ease;
+}
+.bar-fill.warm { background: #c87020; }
+.bar-fill.hot  { background: var(--red); }
+.bar-pct {
+  font-size: 11px;
+  color: var(--txt-mid);
+  min-width: 36px;
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+}
+
+/* ── Status dot ──────────────────────────────────────────── */
+.dot {
+  display: inline-block;
+  width: 7px; height: 7px;
+  border-radius: 50%;
+  margin-right: 7px;
+  flex-shrink: 0;
+  vertical-align: middle;
+}
+.dot-ok   { background: var(--green); box-shadow: 0 0 5px var(--green); }
+.dot-bad  { background: var(--red);   box-shadow: 0 0 5px var(--red);   }
+.dot-unkn { background: var(--txt-lo); }
+
+/* ── Network pill ────────────────────────────────────────── */
+.pill {
+  font-size: 8.5px;
+  letter-spacing: .12em;
+  text-transform: uppercase;
+  padding: 2px 7px;
+  border-radius: 2px;
+  font-weight: 600;
+  flex-shrink: 0;
+}
+.pill-up   { background: rgba(74,158,74,.15);  color: var(--green); }
+.pill-down { background: rgba(184,60,60,.12); color: var(--red);   }
+
+/* ── Actions ─────────────────────────────────────────────── */
+.actions {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 8px;
+  padding: 12px;
+}
+.btn-action {
+  background: var(--btn-face);
+  border: 1px solid var(--btn-edge);
+  border-radius: 3px;
+  color: var(--txt-hi);
+  font-size: 11px;
+  font-family: inherit;
+  letter-spacing: .04em;
+  padding: 9px 10px;
+  cursor: pointer;
+  text-align: center;
+  transition: background .12s, color .12s;
+}
+.btn-action:hover  { background: var(--seam-hi); color: var(--amber); }
+.btn-action:active { opacity: .5; }
+.btn-action.full   { grid-column: 1 / -1; }
+.btn-action.danger { color: #d88a7a; border-color: #5a2820; }
+.btn-action.danger:hover { background: #2a1612; color: var(--red); }
+
+/* ── Toast ───────────────────────────────────────────────── */
+.toast {
+  position: fixed;
+  bottom: 20px; left: 50%;
+  transform: translateX(-50%);
+  background: #2d2a22;
+  border: 1px solid var(--amber-dim);
+  color: var(--amber);
+  font-size: 11px;
+  letter-spacing: .06em;
+  padding: 8px 20px;
+  border-radius: 3px;
+  opacity: 0;
+  transition: opacity .2s;
+  pointer-events: none;
+  z-index: 99;
+  white-space: nowrap;
+}
+.toast.show { opacity: 1; }
+
+/* ── Light mode ──────────────────────────────────────────── */
+html.light {
+  --bg: #c8c4bc; --chassis: #dedad2; --inset: #ccc8c0;
+  --seam: #b8b4ac; --seam-hi: #c4c0b8;
+  --txt-hi: #2a2820; --txt-mid: #6a6058; --txt-lo: #b4b0a8;
+  --btn-face: #d4d0c8; --btn-edge: #c0bcb4;
+}
+html.light .face-header {
+  background: linear-gradient(180deg, #dedad2 0%, #c8c4bc 100%);
+}
+html.light .card-title { background: #d0ccc4; }
+
+/* ── Mobile ──────────────────────────────────────────────── */
+@media (max-width: 480px) {
+  .row-label { min-width: 100px; }
+  .sys-body { padding: 10px 12px 18px; }
+}
+</style>
+<script src="/admin_gate.js"></script>
+</head>
+<body>
+<div class="unit">
+
+  <div class="face-header">
+    <div class="face-brand">
+      <a class="btn-icon" href="/" title="Back to player">&#8592;</a>
+      <img class="face-mark" src="/favicon/symbol.svg" alt="">
+      <span>System</span>
+    </div>
+    <span class="face-model" id="s-hostname">—</span>
+    <button class="btn-icon" id="btn-theme" title="Light / dark mode">☀</button>
+  </div>
+
+  <div class="sys-body">
+
+    <!-- System -->
+    <div class="card">
+      <div class="card-title">System</div>
+      <div class="row">
+        <span class="row-label">Model</span>
+        <span class="row-value" id="s-model">—</span>
+      </div>
+      <div class="row">
+        <span class="row-label">Operating system</span>
+        <span class="row-value" id="s-os">—</span>
+      </div>
+      <div class="row">
+        <span class="row-label">Uptime</span>
+        <span class="row-value amber" id="s-uptime">—</span>
+      </div>
+    </div>
+
+    <!-- Drive -->
+    <div class="card">
+      <div class="card-title">CD Drive</div>
+      <div class="row">
+        <span class="row-label">Model</span>
+        <span class="row-value" id="s-drive-model">—</span>
+      </div>
+      <div class="row">
+        <span class="row-label">Speed control (1×)</span>
+        <span class="row-value" id="s-drive-speed">—</span>
+      </div>
+    </div>
+
+    <!-- Audio -->
+    <div class="card">
+      <div class="card-title">Audio</div>
+      <div class="row">
+        <span class="row-label">Output</span>
+        <span class="row-value" id="s-audio-state">Detecting...</span>
+      </div>
+      <div class="row">
+        <span class="row-label">Device</span>
+        <span class="row-value" id="s-audio-name">&mdash;</span>
+      </div>
+    </div>
+
+    <!-- CPU -->
+    <div class="card">
+      <div class="card-title">CPU</div>
+      <div class="row">
+        <span class="row-label">Temperature</span>
+        <span class="row-value" id="s-temp">—</span>
+      </div>
+      <div class="row">
+        <span class="row-label">Load avg (1 / 5 / 15 min)</span>
+        <span class="row-value" id="s-load">—</span>
+      </div>
+      <div class="row">
+        <span class="row-label">Load</span>
+        <div class="bar-wrap"><div class="bar-fill" id="bar-load" style="width:0%"></div></div>
+        <span class="bar-pct" id="pct-load">—</span>
+      </div>
+    </div>
+
+    <!-- Memory & Disk -->
+    <div class="card">
+      <div class="card-title">Memory &amp; Storage</div>
+      <div class="row">
+        <span class="row-label">RAM</span>
+        <div class="bar-wrap"><div class="bar-fill" id="bar-mem" style="width:0%"></div></div>
+        <span class="bar-pct" id="pct-mem">—</span>
+      </div>
+      <div class="row">
+        <span class="row-label">RAM used / total</span>
+        <span class="row-value" id="s-mem">—</span>
+      </div>
+      <div class="row">
+        <span class="row-label">Disk /</span>
+        <div class="bar-wrap"><div class="bar-fill" id="bar-disk" style="width:0%"></div></div>
+        <span class="bar-pct" id="pct-disk">—</span>
+      </div>
+      <div class="row">
+        <span class="row-label">Disk used / total</span>
+        <span class="row-value" id="s-disk">—</span>
+      </div>
+    </div>
+
+    <!-- Network -->
+    <div class="card">
+      <div class="card-title" style="display:flex;align-items:center;justify-content:space-between">
+        <span>Network</span>
+        <a href="/system/network" class="btn-icon" style="font-size:10px;letter-spacing:.08em;opacity:.65">Configure ›</a>
+      </div>
+      <div id="net-rows"><div class="row"><span class="row-label">—</span></div></div>
+    </div>
+
+    <!-- Services -->
+    <div class="card">
+      <div class="card-title">Services</div>
+      <div class="row">
+        <span class="row-label">
+          <span class="dot dot-unkn" id="dot-backend"></span>cdpcore-backend
+        </span>
+        <span class="row-value" id="val-backend">—</span>
+      </div>
+      <div class="row">
+        <span class="row-label">
+          <span class="dot dot-unkn" id="dot-extension"></span>cdpcore-extension
+        </span>
+        <span class="row-value" id="val-extension">—</span>
+      </div>
+    </div>
+
+    <!-- Roon (shown only if roon_bridge is installed) -->
+    <div class="card" id="card-roon" style="display:none">
+      <div class="card-title" style="display:flex;align-items:center;justify-content:space-between">
+        <span>Roon</span>
+        <a href="/system/roon" class="btn-icon" style="font-size:10px;letter-spacing:.08em;opacity:.65">Manage ›</a>
+      </div>
+      <div class="row">
+        <span class="row-label">
+          <span class="dot dot-unkn" id="dot-roon-bridge"></span>Roon Bridge
+        </span>
+        <span class="row-value" id="val-roon-bridge">—</span>
+      </div>
+      <div class="row">
+        <span class="row-label">
+          <span class="dot dot-unkn" id="dot-roon-ext"></span>Extension
+        </span>
+        <span class="row-value" id="val-roon-ext">—</span>
+      </div>
+    </div>
+
+    <!-- Admin -->
+    <div class="card">
+      <div class="card-title" style="display:flex;align-items:center;justify-content:space-between">
+        <span>Admin</span>
+        <a href="/system/admin" class="btn-icon" style="font-size:10px;letter-spacing:.08em;opacity:.65">Manage ›</a>
+      </div>
+      <div class="row">
+        <span class="row-label">
+          <span class="dot dot-unkn" id="dot-admin"></span>Auth
+        </span>
+        <span class="row-value" id="val-admin-mode">—</span>
+      </div>
+      <div class="row">
+        <span class="row-label">Session</span>
+        <span class="row-value" id="val-admin-state">—</span>
+      </div>
+    </div>
+
+    <!-- Actions -->
+    <div class="card">
+      <div class="card-title">Actions</div>
+      <div class="actions">
+        <button class="btn-action" onclick="act('restart_backend')">Restart Backend</button>
+        <button class="btn-action" onclick="act('restart_all')">Restart CDPcore</button>
+        <button class="btn-action danger" onclick="act('reboot')">Reboot Pi</button>
+        <button class="btn-action danger" onclick="act('poweroff')">Power Off Pi</button>
+      </div>
+    </div>
+
+    <!-- Debug logs (hidden by default; diagnostic tool, not operational surface) -->
+    <div class="card" id="card-logs">
+      <div class="card-title" style="display:flex;align-items:center;justify-content:space-between">
+        <span>Debug</span>
+        <button class="btn-icon" id="btn-logs-toggle" onclick="toggleLogs()"
+                style="font-size:10px;letter-spacing:.08em;opacity:.65">Show logs ›</button>
+      </div>
+      <div id="logs-body" style="display:none">
+        <div style="display:flex;justify-content:flex-end;padding:6px 0 4px">
+          <button class="btn-icon" onclick="fetchLogs()" title="Refresh logs"
+                  style="font-size:11px;letter-spacing:.06em;opacity:.7">↻ Refresh</button>
+        </div>
+        <pre id="log-pre" style="
+          font-size:9px;
+          line-height:1.5;
+          color:var(--txt-mid);
+          background:var(--inset);
+          padding:10px 12px;
+          overflow-x:auto;
+          white-space:pre-wrap;
+          word-break:break-all;
+          max-height:220px;
+          overflow-y:auto;
+          margin:0;
+        ">—</pre>
+      </div>
+    </div>
+
+  </div><!-- /.sys-body -->
+</div><!-- /.unit -->
+
+<div class="toast" id="toast"></div>
+
+<script>
+/* ── Theme ───────────────────────────────────────────────── */
+function applyTheme(light) {
+  document.documentElement.classList.toggle('light', light);
+  document.getElementById('btn-theme').textContent = light ? '☾' : '☀';
+  document.querySelector('meta[name="theme-color"]').content = light ? '#c8c4bc' : '#1b1915';
+}
+applyTheme(localStorage.getItem('cdp-theme') === 'light');
+document.getElementById('btn-theme').addEventListener('click', () => {
+  const light = !document.documentElement.classList.contains('light');
+  localStorage.setItem('cdp-theme', light ? 'light' : 'dark');
+  applyTheme(light);
+});
+
+/* ── Toast ───────────────────────────────────────────────── */
+let _tt = null;
+function toast(msg, ms = 3000) {
+  const el = document.getElementById('toast');
+  el.textContent = msg;
+  el.classList.add('show');
+  clearTimeout(_tt);
+  _tt = setTimeout(() => el.classList.remove('show'), ms);
+}
+
+/* ── Helpers ─────────────────────────────────────────────── */
+function fmtB(b) {
+  if (b >= 1073741824) return (b / 1073741824).toFixed(1) + ' GB';
+  if (b >= 1048576)    return (b / 1048576).toFixed(0) + ' MB';
+  return (b / 1024).toFixed(0) + ' KB';
+}
+
+function setBar(id, pct) {
+  const el = document.getElementById(id);
+  const cls = pct > 85 ? 'hot' : pct > 65 ? 'warm' : '';
+  el.style.width = Math.min(pct, 100) + '%';
+  el.className = 'bar-fill' + (cls ? ' ' + cls : '');
+}
+
+function tempClass(t) {
+  return t > 75 ? 'hot' : t > 60 ? 'warm' : 'amber';
+}
+
+/* ── Apply data ──────────────────────────────────────────── */
+function apply(d) {
+  document.getElementById('s-hostname').textContent = d.hostname || '—';
+
+  /* Drive */
+  const drv = d.drive || {};
+  document.getElementById('s-drive-model').textContent = drv.model || '—';
+  const sc = drv.speed_control;
+  const scEl = document.getElementById('s-drive-speed');
+  if (sc === null || sc === undefined) {
+    scEl.textContent = 'Not tested (insert a disc)';
+    scEl.style.color = 'var(--txt-mid)';
+  } else if (sc) {
+    scEl.textContent = 'Supported';
+    scEl.style.color = 'var(--green)';
+  } else {
+    scEl.textContent = 'Not supported — running at default speed';
+    scEl.style.color = 'var(--red)';
+  }
+  document.getElementById('s-model').textContent    = d.model   || '—';
+  document.getElementById('s-os').textContent       = d.os      || '—';
+  document.getElementById('s-uptime').textContent   = d.uptime  || '—';
+
+  /* CPU temp */
+  const t = d.cpu_temp;
+  const tEl = document.getElementById('s-temp');
+  if (t != null) {
+    tEl.textContent = t.toFixed(1) + ' °C';
+    tEl.className = 'row-value ' + tempClass(t);
+  } else {
+    tEl.textContent = '—'; tEl.className = 'row-value';
+  }
+
+  /* Load */
+  const load = d.load || [0, 0, 0];
+  document.getElementById('s-load').textContent = load.map(x => x.toFixed(2)).join('  ·  ');
+  const lp = d.load_pct || 0;
+  document.getElementById('pct-load').textContent = lp + '%';
+  setBar('bar-load', lp);
+
+  /* Memory */
+  const m = d.memory || {};
+  setBar('bar-mem', m.pct || 0);
+  document.getElementById('pct-mem').textContent = (m.pct || 0) + '%';
+  document.getElementById('s-mem').textContent =
+    m.total ? fmtB(m.used) + ' / ' + fmtB(m.total) : '—';
+
+  /* Disk */
+  const dk = d.disk || {};
+  setBar('bar-disk', dk.pct || 0);
+  document.getElementById('pct-disk').textContent = (dk.pct || 0) + '%';
+  document.getElementById('s-disk').textContent =
+    dk.total ? fmtB(dk.used) + ' / ' + fmtB(dk.total) : '—';
+
+  /* Network */
+  const net = d.network || {};
+  const netEl = document.getElementById('net-rows');
+  const ifaces = Object.entries(net);
+  if (!ifaces.length) {
+    netEl.innerHTML = '<div class="row"><span class="row-label" style="color:var(--txt-lo)">No interfaces</span></div>';
+  } else {
+    netEl.innerHTML = ifaces.map(([name, inf]) => {
+      const up = inf.state === 'up';
+      const details = [
+        inf.ip  ? `IP&nbsp;<b>${inf.ip}</b>` : null,
+        inf.mac ? `MAC&nbsp;${inf.mac}`       : null,
+        inf.speed                             ? inf.speed : null,
+      ].filter(Boolean).join('&ensp;·&ensp;');
+      return `
+      <div class="row" style="flex-direction:column;align-items:stretch;gap:4px;padding:8px 12px">
+        <div style="display:flex;align-items:center;justify-content:space-between">
+          <span style="font-size:12px;color:var(--txt-hi)">${name}</span>
+          <span class="pill ${up ? 'pill-up' : 'pill-down'}">${inf.state}</span>
+        </div>
+        <span style="font-size:10px;color:var(--txt-mid)">${details || '—'}</span>
+      </div>`;
+    }).join('');
+  }
+
+  /* Roon summary (bridge + extension) */
+  const rb = d.roon_bridge;
+  document.getElementById('card-roon').style.display = rb ? '' : 'none';
+  if (rb) {
+    const bridgeOk = rb.active === 'active';
+    document.getElementById('dot-roon-bridge').className = 'dot ' + (bridgeOk ? 'dot-ok' : 'dot-bad');
+    const bridgeEl = document.getElementById('val-roon-bridge');
+    bridgeEl.textContent = rb.active || '—';
+    bridgeEl.style.color = bridgeOk ? 'var(--green)' : 'var(--red)';
+
+    const ext = (d.services || {})['cdpcore-extension'] || {};
+    const extOk = ext.active === 'active';
+    document.getElementById('dot-roon-ext').className = 'dot ' + (extOk ? 'dot-ok' : ext.active === 'unknown' ? 'dot-unkn' : 'dot-bad');
+    const extEl = document.getElementById('val-roon-ext');
+    extEl.textContent = ext.active || '—';
+    extEl.style.color = extOk ? 'var(--green)' : ext.active === 'unknown' ? 'var(--txt-mid)' : 'var(--red)';
+  }
+
+  /* Services */
+  ['backend', 'extension'].forEach(key => {
+    const svc = (d.services || {})[`cdpcore-${key}`] || {};
+    const ok = svc.active === 'active';
+    document.getElementById(`dot-${key}`).className = 'dot ' + (ok ? 'dot-ok' : svc.active === 'unknown' ? 'dot-unkn' : 'dot-bad');
+    const pid = svc.pid && svc.pid !== '0' ? `  PID ${svc.pid}` : '';
+    const el = document.getElementById(`val-${key}`);
+    el.textContent = (svc.active || '—') + pid;
+    el.style.color = ok ? 'var(--green)' : svc.active === 'unknown' ? 'var(--txt-mid)' : 'var(--red)';
+  });
+}
+
+/* ── Fetch ───────────────────────────────────────────────── */
+async function refreshAudio() {
+  try {
+    const [statusResp, devicesResp] = await Promise.all([
+      fetch('/status'),
+      fetch('/devices'),
+    ]);
+    if (!statusResp.ok || !devicesResp.ok) return;
+
+    const status = await statusResp.json();
+    const devices = await devicesResp.json();
+    const alsaId = status.alsa_device || '';
+    const selected = (devices || []).find(d => d.id === alsaId);
+    const selectedPresent = !!selected;
+    const audioState = status.audio_state || 'default';
+
+    let label = 'Detecting...';
+    let sublabel = '\u2014';
+    let color = 'var(--txt-mid)';
+
+    if (audioState === 'usb_single') {
+      label = 'USB DAC';
+      sublabel = selected ? (selected.name || selected.id) : '\u2014';
+      color = 'var(--green)';
+    } else if (audioState === 'usb_multiple') {
+      label = 'Multiple DACs';
+      sublabel = selectedPresent ? ('Using: ' + (selected.name || selected.id)) : 'No active selection';
+      color = selectedPresent ? 'var(--amber)' : 'var(--red)';
+    } else if (audioState === 'no_usb') {
+      label = 'No USB DAC';
+      sublabel = '\u2014';
+      color = 'var(--red)';
+    } else if (audioState === 'device_missing') {
+      label = 'Audio device missing';
+      sublabel = '\u2014';
+      color = 'var(--red)';
+    }
+
+    const stateEl = document.getElementById('s-audio-state');
+    stateEl.textContent = label;
+    stateEl.style.color = color;
+    document.getElementById('s-audio-name').textContent = sublabel;
+  } catch { /* keep last values */ }
+}
+
+async function refresh() {
+  try {
+    const r = await fetch('/system/info');
+    if (r.ok) apply(await r.json());
+  } catch { /* keep last values */ }
+}
+
+/* ── Actions ─────────────────────────────────────────────── */
+const ACT_LABELS = {
+  restart_backend:   'Restart backend service?',
+  restart_extension: 'Restart extension service?',
+  restart_all:       'Restart CDPcore (backend + extension)?',
+  reboot:            'Reboot the Raspberry Pi?',
+  poweroff:          'Power off the Raspberry Pi?',
+};
+const ACT_MSGS = {
+  restart_backend:   'Restarting backend…',
+  restart_extension: 'Restarting extension…',
+  restart_all:       'Restarting CDPcore…',
+  reboot:            'Rebooting Pi…',
+  poweroff:          'Powering off Pi…',
+};
+
+async function act(name, confirm_first = true) {
+  if (confirm_first && !confirm(ACT_LABELS[name] || name)) return;
+  try {
+    await fetch('/system/action', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ action: name }),
+    });
+    toast(ACT_MSGS[name] || 'Done', 4000);
+    if (name === 'reboot' || name === 'poweroff') {
+      setTimeout(() => { window.location.href = '/'; }, 6000);
+    }
+  } catch {
+    toast('Request failed — check service logs', 4000);
+  }
+}
+
+
+/* ── Admin status ────────────────────────────────────────── */
+async function refreshAdmin() {
+  try {
+    const r = await fetch('/admin/status', { credentials: 'same-origin' });
+    if (!r.ok) return;
+    const d = await r.json();
+    const off = d.mode === 'off';
+    document.getElementById('val-admin-mode').textContent = off ? 'LAN-Trust — open' : 'PIN required';
+    document.getElementById('val-admin-state').textContent =
+      off ? '—' : (d.unlocked ? 'Unlocked' : 'Locked');
+    const dot = document.getElementById('dot-admin');
+    dot.className = 'dot ' + (off ? 'dot-bad' : 'dot-ok');
+  } catch { /* keep last */ }
+}
+
+/* ── Logs ────────────────────────────────────────────────── */
+// Logs are diagnostic, not operational — fetched only when the debug card is
+// expanded. The open/closed state persists across reloads so a user mid-debug
+// isn't forced to re-open it every time the page refreshes.
+async function fetchLogs() {
+  try {
+    const r = await fetch('/system/logs?n=150');
+    if (!r.ok) return;
+    const d = await r.json();
+    const pre = document.getElementById('log-pre');
+    pre.textContent = (d.lines || []).join('\n') || '(empty)';
+    pre.scrollTop = pre.scrollHeight;
+  } catch { /* keep last */ }
+}
+
+function setLogsOpen(open) {
+  const body = document.getElementById('logs-body');
+  const btn  = document.getElementById('btn-logs-toggle');
+  body.style.display = open ? 'block' : 'none';
+  btn.textContent = open ? 'Hide logs ›' : 'Show logs ›';
+  localStorage.setItem('cdp-logs-open', open ? '1' : '0');
+  if (open) fetchLogs();
+}
+
+function toggleLogs() {
+  const body = document.getElementById('logs-body');
+  setLogsOpen(body.style.display === 'none');
+}
+
+/* ── Init ────────────────────────────────────────────────── */
+refresh();
+refreshAudio();
+refreshAdmin();
+if (localStorage.getItem('cdp-logs-open') === '1') setLogsOpen(true);
+setInterval(refresh, 4000);
+setInterval(refreshAudio, 5000);
+setInterval(refreshAdmin, 5000);
+</script>
+</body>
+</html>

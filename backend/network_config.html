@@ -1,0 +1,669 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black">
+<meta name="theme-color" content="#1b1915">
+<link rel="icon" type="image/svg+xml" href="/favicon/favicon.svg">
+<link rel="icon" type="image/x-icon" href="/favicon.ico">
+<title>CDPcore · Network</title>
+<style>
+*, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+:root {
+  --bg:         #1b1915;
+  --chassis:    #23201b;
+  --inset:      #1f1d17;
+  --amber:      #e8a028;
+  --amber-dim:  #3d2a10;
+  --seam:       #33302a;
+  --seam-hi:    #3f3d34;
+  --txt-hi:     #d8d0bc;
+  --txt-mid:    #8c8274;
+  --txt-lo:     #48433a;
+  --btn-face:   #2d2a22;
+  --btn-edge:   #3d382e;
+  --green:      #4a9e4a;
+  --red:        #b83c3c;
+}
+
+html { height: 100%; }
+body {
+  background: var(--bg);
+  color: var(--txt-hi);
+  font-family: -apple-system, BlinkMacSystemFont, 'Helvetica Neue', Arial, sans-serif;
+  min-height: 100dvh;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  padding: env(safe-area-inset-top,0) 0 env(safe-area-inset-bottom,24px);
+  user-select: none;
+  -webkit-tap-highlight-color: transparent;
+}
+
+.unit {
+  width: 100%;
+  max-width: 660px;
+  background: var(--chassis);
+  border: 1px solid #33302a;
+  border-top: 2px solid #3f3d34;
+  border-radius: 0 0 8px 8px;
+  overflow: hidden;
+  box-shadow: 0 2px 0 #1b1915, 0 8px 40px rgba(0,0,0,.8), 0 32px 64px rgba(0,0,0,.4);
+}
+
+.face-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 9px 18px 7px;
+  background: linear-gradient(180deg, #2d2a22 0%, #23201b 100%);
+  border-bottom: 1px solid var(--seam);
+}
+.face-brand {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  font-size: 8.5px;
+  letter-spacing: .28em;
+  text-transform: uppercase;
+  color: var(--txt-mid);
+  font-weight: 500;
+}
+.face-mark {
+  width: 14px;
+  height: 14px;
+  display: block;
+  flex-shrink: 0;
+  opacity: .88;
+}
+.face-model {
+  font-size: 10px;
+  letter-spacing: .18em;
+  text-transform: uppercase;
+  color: var(--txt-mid);
+  font-weight: 700;
+}
+.btn-icon {
+  background: none;
+  border: none;
+  color: var(--txt-mid);
+  font-size: 14px;
+  cursor: pointer;
+  padding: 4px 3px;
+  opacity: .7;
+  text-decoration: none;
+  display: flex;
+  align-items: center;
+  line-height: 1;
+}
+.btn-icon:hover { opacity: 1; color: var(--amber); }
+
+.sys-body {
+  padding: 14px 18px 20px;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.card {
+  background: var(--inset);
+  border: 1px solid var(--seam);
+  border-radius: 4px;
+  overflow: hidden;
+}
+.card-title {
+  padding: 5px 12px 4px;
+  background: #1c1a15;
+  border-bottom: 1px solid var(--seam);
+  font-size: 8px;
+  letter-spacing: .30em;
+  text-transform: uppercase;
+  color: var(--txt-mid);
+  font-weight: 600;
+}
+
+/* ── Section inside card ─────────────────────────────────── */
+.cfg-section {
+  padding: 10px 12px;
+  border-bottom: 1px solid var(--txt-lo);
+}
+.cfg-section:last-child { border-bottom: none; }
+.cfg-label {
+  font-size: 9px;
+  letter-spacing: .18em;
+  text-transform: uppercase;
+  color: var(--txt-mid);
+  font-weight: 600;
+  margin-bottom: 8px;
+}
+.cfg-current {
+  font-size: 11px;
+  color: var(--txt-mid);
+  margin-bottom: 8px;
+}
+.cfg-current b { color: var(--txt-hi); font-weight: 500; }
+
+/* ── Inputs ──────────────────────────────────────────────── */
+.net-input {
+  background: var(--inset);
+  border: 1px solid var(--seam-hi);
+  border-radius: 3px;
+  color: var(--txt-hi);
+  font-size: 12px;
+  font-family: inherit;
+  padding: 7px 10px;
+  width: 100%;
+  outline: none;
+}
+.net-input:focus { border-color: var(--amber-dim); }
+.net-input::placeholder { color: var(--txt-lo); }
+
+/* ── Segmented control ───────────────────────────────────── */
+.seg-wrap { display: flex; margin-bottom: 10px; }
+.btn-seg {
+  flex: 1;
+  background: var(--btn-face);
+  border: 1px solid var(--btn-edge);
+  color: var(--txt-mid);
+  font-size: 11px;
+  font-family: inherit;
+  padding: 7px;
+  cursor: pointer;
+  transition: background .1s, color .1s;
+}
+.btn-seg:first-child { border-radius: 3px 0 0 3px; }
+.btn-seg:last-child  { border-radius: 0 3px 3px 0; border-left: none; }
+.btn-seg.active { background: var(--amber-dim); color: var(--amber); border-color: var(--amber-dim); }
+
+/* ── Buttons ─────────────────────────────────────────────── */
+.btn-action {
+  background: var(--btn-face);
+  border: 1px solid var(--btn-edge);
+  border-radius: 3px;
+  color: var(--txt-hi);
+  font-size: 11px;
+  font-family: inherit;
+  letter-spacing: .04em;
+  padding: 9px 10px;
+  cursor: pointer;
+  text-align: center;
+  transition: background .12s, color .12s;
+}
+.btn-action:hover  { background: var(--seam-hi); color: var(--amber); }
+.btn-action:active { opacity: .5; }
+.btn-action.danger { color: #d88a7a; border-color: #5a2820; }
+.btn-action.danger:hover { background: #2a1612; color: var(--red); }
+
+.row-actions {
+  display: flex;
+  gap: 8px;
+  margin-top: 8px;
+  align-items: center;
+}
+.row-actions .hint {
+  font-size: 9px;
+  color: var(--txt-lo);
+  flex: 1;
+  line-height: 1.4;
+}
+
+/* ── Hidden-network toggle ───────────────────────────────── */
+.hidden-toggle-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 8px;
+}
+.hidden-toggle-row input[type="checkbox"] {
+  width: 14px; height: 14px; cursor: pointer; accent-color: var(--amber);
+  flex-shrink: 0;
+}
+.hidden-toggle-row label {
+  font-size: 11px; color: var(--txt-mid); cursor: pointer; user-select: none;
+}
+.hidden-hint {
+  font-size: 9px;
+  color: var(--txt-lo);
+  line-height: 1.4;
+  margin-bottom: 6px;
+}
+
+/* ── WiFi network list ───────────────────────────────────── */
+.wifi-net-item {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 5px 8px;
+  border-radius: 3px;
+  cursor: pointer;
+  transition: background .1s;
+}
+.wifi-net-item:hover { background: var(--seam); }
+.wifi-net-list {
+  margin: 8px 0;
+  max-height: 160px;
+  overflow-y: auto;
+  border: 1px solid var(--seam);
+  border-radius: 3px;
+}
+
+/* ── Warning banner ──────────────────────────────────────── */
+.warn-banner {
+  background: #1a140a;
+  border: 1px solid #3a2808;
+  border-radius: 3px;
+  padding: 8px 10px;
+  font-size: 10px;
+  color: #c08040;
+  line-height: 1.5;
+  margin-bottom: 10px;
+}
+
+/* ── Toast ───────────────────────────────────────────────── */
+.toast {
+  position: fixed;
+  bottom: 20px; left: 50%;
+  transform: translateX(-50%);
+  background: #2d2a22;
+  border: 1px solid var(--amber-dim);
+  color: var(--amber);
+  font-size: 11px;
+  letter-spacing: .06em;
+  padding: 8px 20px;
+  border-radius: 3px;
+  opacity: 0;
+  transition: opacity .2s;
+  pointer-events: none;
+  z-index: 99;
+  white-space: nowrap;
+}
+.toast.show { opacity: 1; }
+
+/* ── Light mode ──────────────────────────────────────────── */
+html.light {
+  --bg: #c8c4bc; --chassis: #dedad2; --inset: #ccc8c0;
+  --seam: #b8b4ac; --seam-hi: #c4c0b8;
+  --txt-hi: #2a2820; --txt-mid: #6a6058; --txt-lo: #b4b0a8;
+  --btn-face: #d4d0c8; --btn-edge: #c0bcb4;
+}
+html.light .face-header { background: linear-gradient(180deg, #dedad2 0%, #c8c4bc 100%); }
+html.light .card-title  { background: #d0ccc4; }
+
+@media (max-width: 480px) {
+  .sys-body { padding: 10px 12px 18px; }
+}
+</style>
+<script src="/admin_gate.js"></script>
+</head>
+<body>
+<div class="unit">
+
+  <div class="face-header">
+    <div class="face-brand">
+      <a class="btn-icon" href="/system" title="Back to System">&#8592;</a>
+      <img class="face-mark" src="/favicon/symbol.svg" alt="">
+      <span>Network</span>
+    </div>
+    <span class="face-model">Configuration</span>
+    <button class="btn-icon" id="btn-theme" title="Light / dark mode">☀</button>
+  </div>
+
+  <div class="sys-body">
+
+    <!-- Hostname -->
+    <div class="card">
+      <div class="card-title">Hostname</div>
+      <div class="cfg-section">
+        <div class="cfg-current" id="cur-hostname">Current: <b>—</b></div>
+        <div style="display:flex;gap:8px">
+          <input class="net-input" type="text" id="inp-hostname"
+                 placeholder="cdpcore" autocapitalize="none"
+                 autocorrect="off" spellcheck="false">
+          <button class="btn-action" style="white-space:nowrap;padding:7px 16px"
+                  onclick="applyHostname()">Apply</button>
+        </div>
+        <div class="row-actions">
+          <span class="hint">Reboot required for mDNS name (<i>hostname</i>.local) to update.</span>
+        </div>
+      </div>
+    </div>
+
+    <!-- Ethernet -->
+    <div class="card">
+      <div class="card-title">Ethernet</div>
+      <div class="cfg-section" id="eth-section">
+        <div class="cfg-current" id="cur-eth">—</div>
+        <div class="seg-wrap">
+          <button class="btn-seg" id="btn-dhcp"   onclick="setEthMethod('dhcp')">DHCP</button>
+          <button class="btn-seg" id="btn-static" onclick="setEthMethod('static')">Static IP</button>
+        </div>
+        <div id="eth-static-fields" style="display:none;flex-direction:column;gap:6px;margin-bottom:8px">
+          <input class="net-input" type="text" id="inp-eth-addr"
+                 placeholder="Address  192.168.1.100/24" autocomplete="off">
+          <input class="net-input" type="text" id="inp-eth-gw"
+                 placeholder="Gateway  192.168.1.1"    autocomplete="off">
+          <input class="net-input" type="text" id="inp-eth-dns"
+                 placeholder="DNS  8.8.8.8"            autocomplete="off">
+        </div>
+        <div class="row-actions">
+          <span class="hint">Changing the IP may disconnect your session.</span>
+          <button class="btn-action" style="padding:7px 16px" onclick="applyEthernet()">Apply</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- WiFi -->
+    <div class="card">
+      <div class="card-title">WiFi</div>
+      <div class="cfg-section">
+        <div class="warn-banner">
+          ⚠ WiFi is not recommended for audio playback.
+          Network interference and latency can cause dropouts.
+          Use a wired Ethernet connection for best performance.
+        </div>
+        <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:10px">
+          <span style="font-size:11px;color:var(--txt-mid)">WiFi radio</span>
+          <button class="btn-action" id="btn-wifi-radio"
+                  onclick="toggleWifiRadio()" style="padding:6px 18px">—</button>
+        </div>
+        <div id="wifi-panel" style="display:none">
+          <div id="cur-wifi" class="cfg-current" style="margin-bottom:10px"></div>
+          <div style="display:flex;gap:8px;margin-bottom:6px">
+            <input class="net-input" type="text" id="inp-wifi-ssid"
+                   placeholder="Network name (SSID)" style="flex:1"
+                   autocapitalize="none" autocorrect="off" spellcheck="false">
+            <button class="btn-action" onclick="wifiScan()"
+                    style="padding:6px 14px;white-space:nowrap">Scan</button>
+          </div>
+          <div class="hidden-toggle-row">
+            <input type="checkbox" id="chk-hidden" onchange="onHiddenChange()">
+            <label for="chk-hidden">Hidden network</label>
+          </div>
+          <div class="hidden-hint" id="hidden-hint" style="display:none">
+            Use this when the SSID is not broadcast. Enter the exact name manually — hidden networks do not appear in the scan list.
+          </div>
+          <input class="net-input" type="password" id="inp-wifi-pass"
+                 placeholder="Password (leave blank for open networks)"
+                 style="margin-bottom:8px" autocomplete="new-password">
+          <div class="wifi-net-list" id="wifi-net-list">
+            <div style="padding:10px 12px;font-size:10px;color:var(--txt-lo)">Press Scan to search for networks</div>
+          </div>
+          <div style="display:flex;gap:8px">
+            <button class="btn-action" style="flex:1" onclick="wifiConnect()">Connect</button>
+            <button class="btn-action danger" id="btn-wifi-disc"
+                    style="display:none" onclick="wifiDisconnect()">Disconnect</button>
+          </div>
+        </div>
+      </div>
+    </div>
+
+  </div>
+</div>
+
+<div class="toast" id="toast"></div>
+
+<script>
+/* ── Theme ───────────────────────────────────────────────── */
+function applyTheme(light) {
+  document.documentElement.classList.toggle('light', light);
+  document.getElementById('btn-theme').textContent = light ? '☾' : '☀';
+  document.querySelector('meta[name="theme-color"]').content = light ? '#c8c4bc' : '#1b1915';
+}
+applyTheme(localStorage.getItem('cdp-theme') === 'light');
+document.getElementById('btn-theme').addEventListener('click', () => {
+  const light = !document.documentElement.classList.contains('light');
+  localStorage.setItem('cdp-theme', light ? 'light' : 'dark');
+  applyTheme(light);
+});
+
+/* ── Toast ───────────────────────────────────────────────── */
+let _tt = null;
+function toast(msg, ms = 3000) {
+  const el = document.getElementById('toast');
+  el.textContent = msg;
+  el.classList.add('show');
+  clearTimeout(_tt);
+  _tt = setTimeout(() => el.classList.remove('show'), ms);
+}
+
+/* ── State ───────────────────────────────────────────────── */
+let _ethConnName = '';
+let _ethMethod   = 'dhcp';
+let _wifiOn      = false;
+let _wifiConn    = null;
+let _wifiIp      = null;
+
+/* ── Load config ─────────────────────────────────────────── */
+async function loadNetworkConfig() {
+  try {
+    const r = await fetch('/system/network/info');
+    if (!r.ok) return;
+    const d = await r.json();
+
+    /* Hostname */
+    document.getElementById('cur-hostname').innerHTML =
+      'Current: <b>' + (d.hostname || '—') + '</b>';
+    document.getElementById('inp-hostname').placeholder = d.hostname || 'cdpcore';
+
+    /* Ethernet */
+    const eths = d.ethernet || [];
+    if (eths.length) {
+      const e = eths[0];
+      _ethConnName = e.name;
+      const ip = e.current_ip || 'no IP';
+      document.getElementById('cur-eth').innerHTML =
+        '<b>' + e.name + '</b>  (' + e.device + ')  &nbsp;' + ip;
+      setEthMethod(e.method === 'manual' ? 'static' : 'dhcp', true);
+      if (e.method === 'manual') {
+        document.getElementById('inp-eth-addr').value = e.address || '';
+        document.getElementById('inp-eth-gw').value   = e.gateway || '';
+        document.getElementById('inp-eth-dns').value  = e.dns     || '';
+      }
+    } else {
+      document.getElementById('cur-eth').textContent = 'No ethernet connections found';
+    }
+
+    /* WiFi */
+    const wifi = d.wifi || {};
+    _wifiOn   = !!wifi.radio;
+    _wifiConn = wifi.connected_to || null;
+    _wifiIp   = wifi.current_ip   || null;
+    updateWifiUI();
+    if (wifi.networks && wifi.networks.length) {
+      renderWifiNets(wifi.networks);
+    }
+  } catch (e) {
+    toast('Failed to load network config', 3000);
+  }
+}
+
+/* ── Ethernet ────────────────────────────────────────────── */
+function setEthMethod(method, silent) {
+  _ethMethod = method;
+  document.getElementById('btn-dhcp').classList.toggle('active',   method === 'dhcp');
+  document.getElementById('btn-static').classList.toggle('active', method === 'static');
+  const sf = document.getElementById('eth-static-fields');
+  sf.style.display = method === 'static' ? 'flex' : 'none';
+}
+
+async function applyHostname() {
+  const inp  = document.getElementById('inp-hostname');
+  const name = inp.value.trim() || inp.placeholder;
+  if (!name || name === '—') return;
+  if (!confirm('Set hostname to "' + name + '"?')) return;
+  try {
+    const r = await fetch('/system/network/hostname', {
+      method: 'POST', headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({ hostname: name }),
+    });
+    const d = await r.json();
+    if (d.ok) {
+      toast('Hostname set to "' + name + '" — reboot to apply mDNS', 5000);
+      inp.value = '';
+      document.getElementById('cur-hostname').innerHTML = 'Current: <b>' + name + '</b>';
+      inp.placeholder = name;
+    } else {
+      toast('Error: ' + (d.error || 'unknown'), 5000);
+    }
+  } catch { toast('Request failed', 3000); }
+}
+
+async function applyEthernet() {
+  if (!_ethConnName) { toast('No ethernet connection found', 3000); return; }
+  if (_ethMethod === 'dhcp') {
+    if (!confirm('Switch to DHCP?\nThe IP address will change and may disconnect your session.')) return;
+    try {
+      const r = await fetch('/system/network/ethernet', {
+        method: 'POST', headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({ connection: _ethConnName, method: 'dhcp' }),
+      });
+      const d = await r.json();
+      toast(d.ok ? 'Switched to DHCP' : 'Error: ' + (d.error || 'unknown'), 4000);
+      if (d.ok) setTimeout(loadNetworkConfig, 3000);
+    } catch { toast('Request failed', 3000); }
+  } else {
+    const address = document.getElementById('inp-eth-addr').value.trim();
+    const gateway = document.getElementById('inp-eth-gw').value.trim();
+    const dns     = document.getElementById('inp-eth-dns').value.trim();
+    if (!address) { toast('IP address is required', 3000); return; }
+    const msg = 'Set static IP:\n  Address: ' + address +
+                '\n  Gateway: ' + (gateway || '—') +
+                '\n  DNS: ' + (dns || '—') +
+                '\n\nThis may disconnect your session.';
+    if (!confirm(msg)) return;
+    try {
+      const r = await fetch('/system/network/ethernet', {
+        method: 'POST', headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({ connection: _ethConnName, method: 'static', address, gateway, dns }),
+      });
+      const d = await r.json();
+      toast(d.ok ? 'Static IP applied' : 'Error: ' + (d.error || 'unknown'), 5000);
+      if (d.ok) setTimeout(loadNetworkConfig, 3000);
+    } catch { toast('Request failed', 3000); }
+  }
+}
+
+/* ── WiFi ────────────────────────────────────────────────── */
+function updateWifiUI() {
+  document.getElementById('btn-wifi-radio').textContent = _wifiOn ? 'Turn Off' : 'Turn On';
+  document.getElementById('wifi-panel').style.display   = _wifiOn ? '' : 'none';
+  const discBtn = document.getElementById('btn-wifi-disc');
+  discBtn.style.display = (_wifiOn && _wifiConn) ? '' : 'none';
+  const curEl = document.getElementById('cur-wifi');
+  if (_wifiConn) {
+    const ipStr = _wifiIp ? '  &nbsp;' + _wifiIp : '';
+    curEl.innerHTML = 'Connected to <b>' + _wifiConn + '</b>' + ipStr;
+  } else {
+    curEl.textContent = 'Not connected';
+  }
+}
+
+async function toggleWifiRadio() {
+  const on = !_wifiOn;
+  if (!on && !confirm('Turn off WiFi?')) return;
+  try {
+    const r = await fetch('/system/network/wifi/radio', {
+      method: 'POST', headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({ on }),
+    });
+    const d = await r.json();
+    if (d.ok) {
+      _wifiOn = on;
+      updateWifiUI();
+      if (on) wifiScan();
+      toast(on ? 'WiFi enabled' : 'WiFi disabled', 3000);
+    } else {
+      toast('Error: ' + (d.error || 'unknown'), 5000);
+    }
+  } catch { toast('Request failed', 3000); }
+}
+
+function renderWifiNets(networks) {
+  const el = document.getElementById('wifi-net-list');
+  if (!networks.length) {
+    el.innerHTML = '<div style="padding:10px 12px;font-size:10px;color:var(--txt-lo)">No networks found</div>';
+    return;
+  }
+  el.innerHTML = networks.map(n => {
+    const bars = n.signal > 66 ? '▂▄▆█' : n.signal > 33 ? '▂▄▆·' : n.signal > 10 ? '▂▄··' : '▂···';
+    const tick = n.connected ? ' <span style="color:var(--green)">&#10003;</span>' : '';
+    const col  = n.connected ? 'var(--green)' : 'var(--txt-hi)';
+    const ssidEsc = n.ssid.replace(/\\/g, '\\\\').replace(/'/g, "\\'");
+    return '<div class="wifi-net-item" onclick="document.getElementById(\'inp-wifi-ssid\').value=\'' + ssidEsc + '\'">' +
+      '<span style="font-size:11px;color:' + col + '">' + n.ssid + tick + '</span>' +
+      '<span style="font-size:9px;color:var(--txt-mid);font-family:monospace;white-space:nowrap">' + (n.security || 'open') + '&nbsp;' + bars + '</span>' +
+      '</div>';
+  }).join('');
+}
+
+async function wifiScan() {
+  toast('Scanning…', 10000);
+  try {
+    const r = await fetch('/system/network/wifi/scan', { method: 'POST' });
+    const d = await r.json();
+    renderWifiNets(d.networks || []);
+    toast('Found ' + (d.networks || []).length + ' network(s)', 3000);
+  } catch { toast('Scan failed', 3000); }
+}
+
+function onHiddenChange() {
+  const hidden = document.getElementById('chk-hidden').checked;
+  document.getElementById('hidden-hint').style.display = hidden ? '' : 'none';
+  // The scan list is still accessible when hidden is checked — the operator
+  // may want to confirm the target AP is genuinely absent from the list.
+  // We just show the hint; we don't hide or disable the scan results.
+}
+
+async function wifiConnect() {
+  const ssid   = document.getElementById('inp-wifi-ssid').value.trim();
+  const pass   = document.getElementById('inp-wifi-pass').value;
+  const hidden = document.getElementById('chk-hidden').checked;
+  if (!ssid) { toast('Enter an SSID', 3000); return; }
+  const label = hidden ? 'hidden network "' + ssid + '"' : '"' + ssid + '"';
+  toast('Connecting to ' + label + '…', 20000);
+  try {
+    const r = await fetch('/system/network/wifi/connect', {
+      method: 'POST', headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({ ssid, password: pass, hidden }),
+    });
+    const d = await r.json();
+    if (d.ok) {
+      _wifiConn = ssid;
+      updateWifiUI();
+      document.getElementById('inp-wifi-pass').value = '';
+      document.getElementById('chk-hidden').checked = false;
+      onHiddenChange();
+      toast('Connected to ' + label, 4000);
+      setTimeout(loadNetworkConfig, 2500);
+    } else {
+      toast('Failed: ' + (d.error || 'unknown'), 6000);
+    }
+  } catch { toast('Request failed', 3000); }
+}
+
+async function wifiDisconnect() {
+  if (!_wifiConn || !confirm('Disconnect from "' + _wifiConn + '"?')) return;
+  try {
+    const r = await fetch('/system/network/wifi/disconnect', {
+      method: 'POST', headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({ connection: _wifiConn }),
+    });
+    const d = await r.json();
+    if (d.ok) {
+      _wifiConn = null;
+      updateWifiUI();
+      toast('Disconnected', 3000);
+    } else {
+      toast('Error: ' + (d.error || 'unknown'), 4000);
+    }
+  } catch { toast('Request failed', 3000); }
+}
+
+/* ── Init ────────────────────────────────────────────────── */
+loadNetworkConfig();
+</script>
+</body>
+</html>

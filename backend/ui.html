@@ -1,0 +1,1293 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black">
+<meta name="theme-color" content="#1b1915">
+<link rel="icon" type="image/svg+xml" href="/favicon/favicon.svg">
+<link rel="icon" type="image/x-icon" href="/favicon.ico">
+<link rel="icon" type="image/png" sizes="32x32" href="/favicon/favicon-32x32.png">
+<link rel="icon" type="image/png" sizes="16x16" href="/favicon/favicon-16x16.png">
+<link rel="apple-touch-icon" sizes="180x180" href="/favicon/apple-touch-icon.png">
+<link rel="manifest" href="/favicon/site.webmanifest">
+<title>CDPcore · Player</title>
+<style>
+*, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+:root {
+  --bg:         #1b1915;
+  --chassis:    #23201b;
+  --inset:      #1f1d17;
+  --vfd-bg:     #04060a;
+  --amber:      #e8a028;
+  --amber-hi:   #f0b840;
+  --amber-dim:  #3d2a10;
+  --amber-glow: rgba(232,160,40,.22);
+  --seam:       #33302a;
+  --seam-hi:    #3f3d34;
+  --txt-hi:     #d8d0bc;
+  --txt-mid:    #8c8274;
+  --txt-lo:     #48433a;
+  --btn-face:   #2d2a22;
+  --btn-edge:   #3d382e;
+}
+
+html { height: 100%; }
+body {
+  background: var(--bg);
+  color: var(--txt-hi);
+  font-family: -apple-system, BlinkMacSystemFont, 'Helvetica Neue', Arial, sans-serif;
+  min-height: 100dvh;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: flex-start;
+  padding: env(safe-area-inset-top,0) 0 env(safe-area-inset-bottom,16px);
+  user-select: none;
+  -webkit-tap-highlight-color: transparent;
+}
+
+/* ── Chassis ─────────────────────────────────────────────── */
+.unit {
+  width: 100%;
+  max-width: 660px;
+  background: var(--chassis);
+  border: 1px solid #33302a;
+  border-top: 2px solid #3f3d34;
+  border-radius: 0 0 8px 8px;
+  overflow: hidden;
+  box-shadow:
+    0 2px 0 #1b1915,
+    0 8px 40px rgba(0,0,0,.8),
+    0 32px 64px rgba(0,0,0,.4);
+}
+
+/* ── Faceplate header ─────────────────────────────────────── */
+.face-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 9px 18px 7px;
+  background: linear-gradient(180deg, #2d2a22 0%, #23201b 100%);
+  border-bottom: 1px solid var(--seam);
+}
+.face-brand {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  font-size: 8.5px;
+  letter-spacing: .28em;
+  text-transform: uppercase;
+  color: var(--txt-mid);
+  font-weight: 500;
+}
+.face-mark {
+  width: 14px; height: 14px;
+  display: block;
+  flex-shrink: 0;
+  opacity: .88;
+}
+.face-cd-icon {
+  width: 14px; height: 14px;
+  border-radius: 50%;
+  background: transparent;
+  border: 1px solid currentColor;
+  position: relative;
+  flex-shrink: 0;
+  opacity: 0.55;
+  /* concentric rings via inset box-shadow */
+  box-shadow:
+    inset 0 0 0 3px rgba(200,190,170,.22),
+    inset 0 0 0 5px rgba(200,190,170,.12);
+}
+.face-cd-icon::after {
+  content: '';
+  position: absolute;
+  top: 50%; left: 50%;
+  width: 4px; height: 4px;
+  border-radius: 50%;
+  border: 1px solid currentColor;
+  background: transparent;
+  transform: translate(-50%,-50%);
+}
+.face-model {
+  font-size: 10px;
+  letter-spacing: .18em;
+  text-transform: uppercase;
+  color: var(--txt-mid);
+  font-weight: 700;
+}
+
+/* ── Main body ────────────────────────────────────────────── */
+.face-body {
+  display: flex;
+  gap: 16px;
+  padding: 16px 18px;
+  align-items: flex-start;
+}
+
+/* ── Cover art ────────────────────────────────────────────── */
+.cover-mount {
+  flex-shrink: 0;
+  width: 148px;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+.cover-bezel {
+  width: 148px;
+  height: 148px;
+  border: 1px solid #2d2a22;
+  border-radius: 2px;
+  background: #08080a;
+  overflow: hidden;
+  position: relative;
+  box-shadow:
+    inset 0 0 0 1px #0a0a0c,
+    inset 2px 2px 8px rgba(0,0,0,.7),
+    0 2px 8px rgba(0,0,0,.5);
+}
+.cover-img {
+  width: 100%; height: 100%;
+  object-fit: cover;
+  display: block;
+  opacity: 0;
+  transition: opacity .5s ease;
+}
+.cover-img.loaded { opacity: 1; }
+.cover-ph {
+  position: absolute; inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+.disc-graphic {
+  width: 96px; height: 96px;
+  opacity: .14;
+}
+
+/* track-in-disc mini info */
+.cover-meta {
+  text-align: center;
+}
+.cover-meta-title {
+  font-size: 10px;
+  color: var(--txt-mid);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  line-height: 1.3;
+}
+.cover-meta-format {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 0;
+  margin-top: 5px;
+  font-size: 7.5px;
+  letter-spacing: .14em;
+  text-transform: uppercase;
+  color: var(--txt-lo);
+  border: 1px solid #1e1a14;
+  border-radius: 2px;
+  padding: 2px 6px;
+  background: #0c0a08;
+  transition: color .3s, border-color .3s;
+}
+.cover-meta-format.active {
+  color: rgba(232,160,40,.55);
+  border-color: #3a2a10;
+}
+
+/* ── Display + info panel ─────────────────────────────────── */
+.display-col {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+/* ── VFD display ──────────────────────────────────────────── */
+.vfd {
+  background: var(--vfd-bg);
+  border: 1px solid #141210;
+  border-radius: 3px;
+  padding: 9px 11px 8px;
+  box-shadow:
+    inset 0 1px 8px rgba(0,0,0,.8),
+    inset 0 0 0 1px rgba(0,0,0,.4);
+  /* subtle scanlines */
+  background-image:
+    repeating-linear-gradient(
+      0deg, transparent, transparent 3px,
+      rgba(0,0,0,.12) 3px, rgba(0,0,0,.12) 4px
+    );
+}
+
+.vfd-statusbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 8px;
+}
+.vfd-indicators {
+  display: flex;
+  gap: 8px;
+}
+.vfd-ind {
+  font-size: 7.5px;
+  letter-spacing: .16em;
+  text-transform: uppercase;
+  color: var(--amber-dim);
+  font-weight: 600;
+  transition: color .2s, text-shadow .2s;
+}
+.vfd-ind.on {
+  color: var(--amber);
+  text-shadow: 0 0 6px var(--amber-glow);
+}
+.vfd-ind-play  { }
+.vfd-ind-pause { }
+.vfd-ind-stop  { }
+
+.vfd-state-pill {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  font-size: 7.5px;
+  letter-spacing: .2em;
+  text-transform: uppercase;
+  color: var(--txt-lo);
+}
+.vfd-pulse {
+  width: 5px; height: 5px;
+  border-radius: 50%;
+  background: var(--amber-dim);
+  transition: background .2s, box-shadow .2s;
+}
+.vfd-pulse.playing {
+  background: var(--amber);
+  box-shadow: 0 0 5px var(--amber), 0 0 10px var(--amber-glow);
+  animation: pulse-anim 1.8s ease-in-out infinite;
+}
+.vfd-pulse.paused {
+  background: rgba(232,160,40,.4);
+  box-shadow: 0 0 4px var(--amber-glow);
+}
+@keyframes pulse-anim {
+  0%,100% { opacity: 1; }
+  50%      { opacity: .35; }
+}
+
+/* Big numbers row */
+.vfd-digits {
+  display: flex;
+  align-items: flex-end;
+  gap: 0;
+}
+.vfd-cell {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  padding: 0 10px;
+  border-right: 1px solid #0e0e0e;
+}
+.vfd-cell:first-child { padding-left: 0; }
+.vfd-cell:last-child  { padding-right: 0; border-right: none; margin-left: auto; align-items: flex-end; }
+
+.vfd-digit {
+  font-family: 'Courier New', 'SF Mono', 'Lucida Console', monospace;
+  font-weight: 700;
+  color: var(--amber);
+  text-shadow:
+    0 0 8px var(--amber),
+    0 0 18px var(--amber-glow),
+    0 0 32px rgba(232,160,40,.08);
+  line-height: 1;
+  letter-spacing: .04em;
+  transition: color .2s, text-shadow .2s;
+}
+.vfd-digit.dim {
+  color: var(--amber-dim);
+  text-shadow: none;
+}
+.vfd-digit-xl  { font-size: 44px; }
+.vfd-digit-lg  { font-size: 28px; }
+.vfd-digit-md  { font-size: 22px; }
+.vfd-digit-sm  { font-size: 16px; }
+
+.vfd-cell-label {
+  font-size: 7px;
+  letter-spacing: .2em;
+  text-transform: uppercase;
+  color: var(--amber-dim);
+  margin-top: 3px;
+  font-weight: 600;
+}
+
+/* Track progress dots */
+.vfd-trackdots {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 3px;
+  margin-top: 8px;
+  padding-top: 7px;
+  border-top: 1px solid #0e0e12;
+}
+.vfd-td {
+  width: 5px; height: 5px;
+  border-radius: 50%;
+  background: var(--amber-dim);
+  transition: background .25s, box-shadow .25s;
+}
+.vfd-td.done    { background: rgba(232,160,40,.28); }
+.vfd-td.current { background: var(--amber); box-shadow: 0 0 5px var(--amber); }
+
+/* ── Metadata text ────────────────────────────────────────── */
+.meta-block {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  padding: 0 1px;
+}
+.meta-track {
+  font-size: 15px;
+  font-weight: 600;
+  color: var(--txt-hi);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  line-height: 1.2;
+}
+.meta-album {
+  font-size: 11.5px;
+  color: var(--txt-mid);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.meta-artist {
+  font-size: 10.5px;
+  color: var(--txt-lo);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+/* ── Progress ─────────────────────────────────────────────── */
+.progress-wrap {
+  padding: 0 18px;
+  margin-bottom: 2px;
+}
+.scrubber {
+  position: relative;
+  height: 20px;
+  cursor: default;
+}
+.scrubber-rail {
+  position: absolute;
+  top: 50%; left: 0; right: 0;
+  height: 1.5px;
+  background: var(--seam);
+  border-radius: 1px;
+  transform: translateY(-50%);
+  overflow: visible;
+}
+.scrubber-fill {
+  height: 100%;
+  background: linear-gradient(90deg, rgba(232,160,40,.6), var(--amber));
+  border-radius: 1px;
+  width: 0%;
+  transition: width .95s linear;
+  box-shadow: 0 0 4px var(--amber-glow);
+}
+.scrubber-head {
+  position: absolute;
+  top: 50%;
+  width: 7px; height: 7px;
+  border-radius: 50%;
+  background: var(--amber);
+  border: 1.5px solid var(--chassis);
+  box-shadow: 0 0 6px var(--amber);
+  transform: translate(-50%, -50%);
+  left: 0%;
+  transition: left .95s linear;
+  pointer-events: none;
+}
+
+/* Track tick marks */
+.track-ticks {
+  display: flex;
+  height: 5px;
+  margin-top: 1px;
+}
+.track-tick {
+  flex: 1;
+  border-left: 1px solid var(--seam);
+}
+.track-tick:first-child { border-left: none; }
+
+.time-bar {
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+  margin-top: 5px;
+  padding: 0 1px;
+}
+.time-elapsed {
+  font-family: 'Courier New', monospace;
+  font-size: 11px;
+  color: var(--amber);
+  letter-spacing: .04em;
+  text-shadow: 0 0 6px var(--amber-glow);
+}
+.time-disc {
+  font-size: 8.5px;
+  letter-spacing: .1em;
+  color: var(--txt-lo);
+  text-transform: uppercase;
+}
+.time-remain {
+  font-family: 'Courier New', monospace;
+  font-size: 11px;
+  color: var(--txt-mid);
+  letter-spacing: .04em;
+}
+
+/* ── Transport controls ───────────────────────────────────── */
+.controls {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  padding: 12px 18px;
+  border-top: 1px solid var(--seam);
+  border-bottom: 1px solid var(--seam);
+  background: linear-gradient(180deg, #23201b 0%, #1a1813 100%);
+}
+
+.btn {
+  background: linear-gradient(180deg, #201e16 0%, #181610 100%);
+  border: 1px solid var(--btn-edge);
+  border-bottom-color: #141210;
+  cursor: pointer;
+  color: var(--txt-hi);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 3px;
+  touch-action: manipulation;
+  font-size: 13px;
+  box-shadow:
+    0 2px 4px rgba(0,0,0,.6),
+    inset 0 1px 0 rgba(255,255,255,.04),
+    inset 0 -1px 0 rgba(0,0,0,.3);
+  transition: transform .08s, box-shadow .08s;
+  width: 46px; height: 34px;
+}
+.btn:active {
+  box-shadow:
+    0 1px 2px rgba(0,0,0,.6),
+    inset 0 2px 4px rgba(0,0,0,.5);
+  transform: translateY(1px);
+}
+.btn:disabled { opacity: .2; pointer-events: none; }
+
+.btn-center {
+  width: 58px; height: 44px;
+  font-size: 18px;
+  background: linear-gradient(180deg, #28200e 0%, #1c1608 100%);
+  border-color: #3a2e14;
+  border-bottom-color: #1c1408;
+  color: var(--amber);
+  box-shadow:
+    0 2px 4px rgba(0,0,0,.7),
+    inset 0 1px 0 rgba(232,160,40,.1),
+    0 0 12px rgba(232,160,40,.06);
+}
+
+.btn-label {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 2px;
+}
+.btn-label span:first-child { font-size: 14px; }
+.btn-label-txt {
+  font-size: 6px;
+  letter-spacing: .15em;
+  text-transform: uppercase;
+  color: var(--txt-lo);
+  font-weight: 600;
+}
+.btn-center .btn-label-txt { color: rgba(232,160,40,.4); }
+
+/* ── Track list ───────────────────────────────────────────── */
+.tracklist-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 7px 18px;
+  cursor: pointer;
+  border-top: 1px solid var(--seam);
+  transition: background .1s;
+}
+.tracklist-header:active { background: #141210; }
+.tracklist-heading {
+  font-size: 8px;
+  letter-spacing: .22em;
+  text-transform: uppercase;
+  color: var(--txt-lo);
+  font-weight: 600;
+}
+.tracklist-count {
+  font-size: 8px;
+  letter-spacing: .1em;
+  color: var(--txt-lo);
+  font-family: 'Courier New', monospace;
+}
+.tracklist-chevron {
+  font-size: 10px;
+  color: var(--txt-lo);
+  transition: transform .2s;
+}
+.tracklist-chevron.open { transform: rotate(180deg); }
+
+.tracklist-body {
+  max-height: 0;
+  overflow: hidden;
+  transition: max-height .28s ease;
+}
+.tracklist-body.open {
+  max-height: 280px;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+}
+/* Custom scrollbar */
+.tracklist-body::-webkit-scrollbar { width: 3px; }
+.tracklist-body::-webkit-scrollbar-track { background: transparent; }
+.tracklist-body::-webkit-scrollbar-thumb { background: var(--seam); border-radius: 2px; }
+
+.track-row {
+  display: flex;
+  align-items: center;
+  padding: 7px 18px;
+  gap: 10px;
+  cursor: pointer;
+  border-top: 1px solid #1a1813;
+  transition: background .1s;
+}
+.track-row:first-child { border-top: none; }
+.track-row:active, .track-row:hover { background: #141210; }
+.track-row.active { background: #16140e; }
+
+.track-num {
+  font-family: 'Courier New', monospace;
+  font-size: 10px;
+  color: var(--txt-lo);
+  width: 20px;
+  text-align: right;
+  flex-shrink: 0;
+}
+.track-row.active .track-num { color: var(--amber); text-shadow: 0 0 6px var(--amber-glow); }
+
+.track-pip {
+  width: 4px; height: 4px;
+  border-radius: 50%;
+  flex-shrink: 0;
+  background: transparent;
+  transition: background .2s, box-shadow .2s;
+}
+.track-row.active .track-pip {
+  background: var(--amber);
+  box-shadow: 0 0 4px var(--amber);
+}
+
+.track-name {
+  flex: 1;
+  font-size: 11.5px;
+  color: var(--txt-mid);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.track-row.active .track-name { color: var(--txt-hi); }
+
+.track-dur {
+  font-family: 'Courier New', monospace;
+  font-size: 10px;
+  color: var(--txt-lo);
+  flex-shrink: 0;
+}
+
+/* ── Footer ───────────────────────────────────────────────── */
+.face-footer {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 7px 18px;
+  border-top: 1px solid var(--seam);
+  background: linear-gradient(180deg, #23201b 0%, #1a1813 100%);
+}
+.footer-spec {
+  font-size: 7.5px;
+  letter-spacing: .16em;
+  text-transform: uppercase;
+  color: var(--txt-lo);
+}
+
+/* ── Mobile ───────────────────────────────────────────────── */
+@media (max-width: 576px) {
+
+  /* Header */
+  .face-brand  { font-size: 7px; letter-spacing: .18em; }
+  .face-mark { width: 11px; height: 11px; }
+  .face-cd-icon { width: 11px; height: 11px; }
+
+  /* Body: cover + info stacked */
+  .face-body {
+    flex-direction: column;
+    align-items: stretch;
+    padding: 12px 14px;
+    gap: 12px;
+  }
+
+  /* Display col: full width in column layout */
+  .display-col { width: 100%; gap: 9px; }
+
+  /* Cover: compact row (square image + metadata alongside) */
+  .cover-mount {
+    width: 100%;
+    flex-direction: row;
+    align-items: center;
+    gap: 12px;
+  }
+  .cover-bezel {
+    width: 96px;
+    height: 96px;
+    flex-shrink: 0;
+  }
+  .cover-meta       { text-align: left; flex: 1; min-width: 0; }
+  .cover-meta-title { font-size: 11px; }
+  .cover-meta-format { justify-content: flex-start; margin-top: 6px; }
+
+  /* VFD: hide 4th cell (track/total), reduce font sizes */
+  .vfd { padding: 8px 10px 7px; }
+  .vfd-cell:last-child { display: none; }
+  .vfd-cell            { padding: 0 8px; }
+  .vfd-cell:first-child { padding-left: 0; }
+  .vfd-digit-xl { font-size: 30px; }
+  .vfd-digit-lg { font-size: 20px; }
+  .vfd-digit-md { font-size: 16px; }
+
+  /* Metadata */
+  .meta-track  { font-size: 13px; }
+  .meta-album  { font-size: 10.5px; }
+  .meta-artist { font-size: 10px; }
+
+  /* Progress + controls + track list */
+  .progress-wrap { padding: 0 14px; }
+  .controls      { padding: 10px 14px; gap: 6px; }
+  .btn           { width: 42px; height: 32px; font-size: 12px; }
+  .btn-center    { width: 54px; height: 40px; font-size: 17px; }
+
+  .tracklist-header,
+  .track-row,
+  .face-footer  { padding-left: 14px; padding-right: 14px; }
+}
+
+/* Very narrow screens (≤ 360px): simplify further */
+@media (max-width: 360px) {
+  .face-brand  { display: none; }
+  .face-model  { margin-left: auto; }
+  .cover-bezel { width: 82px; height: 82px; }
+  .vfd-digit-xl { font-size: 26px; }
+  .vfd-digit-lg { font-size: 18px; }
+  .vfd-digit-md { font-size: 14px; }
+  .vfd-cell-label { font-size: 6px; }
+  .btn        { width: 38px; height: 30px; }
+  .btn-center { width: 48px; height: 38px; }
+  #footer-right { display: none; }
+}
+
+/* ── Theme toggle button ──────────────────────────────────── */
+.btn-theme {
+  background: none;
+  border: 1px solid var(--seam-hi);
+  border-radius: 2px;
+  color: var(--txt-lo);
+  font-size: 10px;
+  width: 20px; height: 14px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  padding: 0;
+  line-height: 1;
+  transition: color .2s, border-color .2s, opacity .2s;
+  flex-shrink: 0;
+}
+.btn-theme:active { opacity: .5; }
+
+/* ── Light mode — aluminio/plata ─────────────────────────── */
+/* VFD panel always stays dark (physical display)             */
+html.light {
+  --bg:       #a8a49c;
+  --chassis:  #c8c4bc;
+  --inset:    #bcb8b0;
+  --seam:     #a4a09a;
+  --seam-hi:  #e0dcd4;
+  --txt-hi:   #16120e;
+  --txt-mid:  #504c46;
+  --txt-lo:   #8c8880;
+  --btn-face: #d4d0c8;
+  --btn-edge: #b8b4ac;
+}
+html.light body { color: var(--txt-hi); }
+html.light .unit {
+  border-color: #a4a09a;
+  border-top-color: #e0dcd4;
+  box-shadow: 0 2px 0 #a0a09a, 0 8px 40px rgba(0,0,0,.22), 0 32px 64px rgba(0,0,0,.1);
+}
+html.light .face-header {
+  background: linear-gradient(180deg, #dedad2 0%, #c8c4bc 100%);
+  border-bottom-color: var(--seam);
+}
+html.light .face-body  { background: var(--chassis); }
+html.light .cover-bezel {
+  border-color: #a8a49c;
+  background: #c0bcb4;
+  box-shadow: inset 0 0 0 1px #b0aca4, inset 2px 2px 8px rgba(0,0,0,.18), 0 2px 8px rgba(0,0,0,.12);
+}
+html.light .cover-meta-format {
+  border-color: #b8b4ac;
+  background: #bebab0;
+}
+html.light .cover-meta-format.active {
+  color: rgba(200,130,20,.9);
+  border-color: #b89030;
+}
+html.light .scrubber-rail  { background: #b4b0a8; }
+html.light .scrubber-head  { border-color: var(--chassis); }
+html.light .track-tick     { border-left-color: #b8b4ac; }
+html.light .controls {
+  background: linear-gradient(180deg, #c4c0b8 0%, #bcb8b0 100%);
+  border-color: var(--seam);
+}
+html.light .btn {
+  background: linear-gradient(180deg, #dedad2 0%, #ccc8c0 100%);
+  border-color: var(--btn-edge);
+  border-bottom-color: #a4a09a;
+  color: var(--txt-hi);
+  box-shadow: 0 2px 4px rgba(0,0,0,.18), inset 0 1px 0 rgba(255,255,255,.65), inset 0 -1px 0 rgba(0,0,0,.07);
+}
+html.light .btn:active {
+  box-shadow: 0 1px 2px rgba(0,0,0,.18), inset 0 2px 4px rgba(0,0,0,.1);
+}
+html.light .tracklist-header { border-top-color: var(--seam); }
+html.light .tracklist-header:active { background: #bcb8b0; }
+html.light .track-row        { border-top-color: #c0bcb4; }
+html.light .track-row:active,
+html.light .track-row:hover  { background: #c4c0b8; }
+html.light .track-row.active { background: #ccc8c0; }
+html.light .face-footer {
+  background: linear-gradient(180deg, #c4c0b8 0%, #bcb8b0 100%);
+  border-top-color: var(--seam);
+}
+</style>
+</head>
+<body>
+<div class="unit">
+
+  <!-- Faceplate header -->
+  <div class="face-header">
+    <div class="face-brand">
+      <img class="face-mark" src="/favicon/symbol.svg" alt="">
+      <span>CDPcore</span>
+    </div>
+    <div style="display:flex;align-items:center;gap:6px">
+      <button class="btn-theme" id="btn-theme" title="Light / dark mode">☀</button>
+      <a href="/system" title="System" style="background:none;border:none;color:var(--txt-mid);font-size:14px;opacity:.6;cursor:pointer;text-decoration:none;padding:4px 2px;line-height:1;display:flex;align-items:center;" onmouseover="this.style.opacity=1;this.style.color='var(--amber)'" onmouseout="this.style.opacity=.6;this.style.color='var(--txt-mid)'">⚙</a>
+    </div>
+    <span class="face-model">CDP · ES</span>
+  </div>
+
+  <!-- Main -->
+  <div class="face-body">
+
+    <!-- Cover + format -->
+    <div class="cover-mount">
+      <div class="cover-bezel">
+        <img id="cover" class="cover-img" alt="" crossorigin>
+        <div class="cover-ph" id="cover-ph">
+          <svg class="disc-graphic" viewBox="0 0 100 100" fill="none">
+            <circle cx="50" cy="50" r="47" stroke="#e8a028" stroke-width="1.2"/>
+            <circle cx="50" cy="50" r="40" stroke="#e8a028" stroke-width=".6" stroke-dasharray="3 2.5"/>
+            <circle cx="50" cy="50" r="33" stroke="#e8a028" stroke-width=".6"/>
+            <circle cx="50" cy="50" r="26" stroke="#e8a028" stroke-width=".6" stroke-dasharray="2 3"/>
+            <circle cx="50" cy="50" r="19" stroke="#e8a028" stroke-width=".6"/>
+            <circle cx="50" cy="50" r="12" stroke="#e8a028" stroke-width=".6" stroke-dasharray="1.5 2.5"/>
+            <circle cx="50" cy="50" r="6"  stroke="#e8a028" stroke-width="1.2"/>
+            <circle cx="50" cy="50" r="2.5" fill="#e8a028" opacity=".35"/>
+          </svg>
+        </div>
+      </div>
+      <div class="cover-meta">
+        <div class="cover-meta-title" id="cover-album">—</div>
+        <div class="cover-meta-format" id="cover-format">
+          CDDA &nbsp;·&nbsp; 44.1 kHz &nbsp;·&nbsp; 16 bit
+        </div>
+      </div>
+    </div>
+
+    <!-- Display column -->
+    <div class="display-col">
+
+      <!-- VFD -->
+      <div class="vfd">
+        <div class="vfd-statusbar">
+          <div class="vfd-indicators">
+            <span class="vfd-ind vfd-ind-play"  id="ind-play">PLAY</span>
+            <span class="vfd-ind vfd-ind-pause" id="ind-pause">PAUSE</span>
+            <span class="vfd-ind vfd-ind-stop"  id="ind-stop">STOP</span>
+          </div>
+          <div class="vfd-state-pill">
+            <div class="vfd-pulse" id="vfd-pulse"></div>
+            <span id="vfd-label">NO DISC</span>
+          </div>
+        </div>
+
+        <div class="vfd-digits">
+          <div class="vfd-cell">
+            <div class="vfd-digit vfd-digit-xl dim" id="d-track">--</div>
+            <div class="vfd-cell-label">Track</div>
+          </div>
+          <div class="vfd-cell">
+            <div class="vfd-digit vfd-digit-lg dim" id="d-elapsed">--:--</div>
+            <div class="vfd-cell-label">Elapsed</div>
+          </div>
+          <div class="vfd-cell">
+            <div class="vfd-digit vfd-digit-md dim" id="d-remain">--:--</div>
+            <div class="vfd-cell-label">Remaining</div>
+          </div>
+          <div class="vfd-cell">
+            <div class="vfd-digit vfd-digit-sm dim" id="d-of">-- / --</div>
+            <div class="vfd-cell-label">Track / Total</div>
+          </div>
+        </div>
+
+        <div class="vfd-trackdots" id="vfd-dots"></div>
+      </div>
+
+      <!-- Metadata -->
+      <div class="meta-block">
+        <div class="meta-track"  id="meta-track">NO DISC</div>
+        <div class="meta-album"  id="meta-album">—</div>
+        <div class="meta-artist" id="meta-artist">—</div>
+      </div>
+
+    </div><!-- /.display-col -->
+  </div><!-- /.face-body -->
+
+  <!-- Progress -->
+  <div class="progress-wrap">
+    <div class="scrubber">
+      <div class="scrubber-rail">
+        <div class="scrubber-fill" id="prog-fill"></div>
+      </div>
+      <div class="scrubber-head" id="prog-head"></div>
+    </div>
+    <div class="track-ticks" id="track-ticks"></div>
+    <div class="time-bar">
+      <span class="time-elapsed" id="t-elapsed">0:00</span>
+      <span class="time-disc"    id="t-disc-info"></span>
+      <span class="time-remain"  id="t-remain">-0:00</span>
+    </div>
+  </div>
+
+  <!-- Controls -->
+  <div class="controls">
+    <button class="btn" id="btn-prev" disabled>
+      <div class="btn-label"><span>⏮</span><span class="btn-label-txt">Prev</span></div>
+    </button>
+    <button class="btn" id="btn-stop" disabled>
+      <div class="btn-label"><span>■</span><span class="btn-label-txt">Stop</span></div>
+    </button>
+    <button class="btn btn-center" id="btn-play" disabled>
+      <div class="btn-label"><span id="btn-play-icon">▶</span><span class="btn-label-txt">Play</span></div>
+    </button>
+    <button class="btn" id="btn-next" disabled>
+      <div class="btn-label"><span>⏭</span><span class="btn-label-txt">Next</span></div>
+    </button>
+  </div>
+
+  <!-- Track list -->
+  <div>
+    <div class="tracklist-header" id="tl-toggle">
+      <span class="tracklist-heading">Tracks</span>
+      <span class="tracklist-count" id="tl-count">—</span>
+      <span class="tracklist-chevron" id="tl-chevron">▾</span>
+    </div>
+    <div class="tracklist-body" id="tl-body"></div>
+  </div>
+
+  <!-- Footer -->
+  <div class="face-footer">
+    <span class="footer-spec">CDDA &nbsp;·&nbsp; 44.1 kHz &nbsp;·&nbsp; 16-bit &nbsp;·&nbsp; Stereo</span>
+    <span class="footer-spec" id="footer-right">—</span>
+  </div>
+
+</div><!-- /.unit -->
+
+<script>
+/* ── First-boot setup redirect ───────────────────────────── */
+/* Non-blocking: if /admin/setup_required returns true, jump to /setup.
+   We fire this early; the rest of the page still boots, but the redirect
+   will replace the document before any user-visible render thrashing. */
+(function () {
+  fetch('/admin/setup_required', { credentials: 'same-origin' })
+    .then(r => r.ok ? r.json() : null)
+    .then(d => { if (d && d.required) window.location.replace('/setup'); })
+    .catch(() => { /* backend not reachable — stay and let /status fail visibly */ });
+})();
+
+/* ── State ───────────────────────────────────────────────── */
+let state      = {};
+let tracks     = [];
+let coverUrl    = null;
+let coverLoaded = false;
+let tlOpen     = true;   // expanded by default
+
+/* ── Elapsed interpolation ───────────────────────────────── */
+let _elapsedBase  = 0;      // server-reported elapsed at last update
+let _elapsedBaseTs = 0;     // performance.now() at last update
+let _tickTimer    = null;   // rAF handle
+
+
+/* ── Utils ───────────────────────────────────────────────── */
+function fmt(sec) {
+  const s = Math.max(0, Math.floor(sec));
+  return Math.floor(s / 60) + ':' + String(s % 60).padStart(2, '0');
+}
+function totalTime(trks) {
+  const s = trks.reduce((a, t) => a + (t.duration || 0), 0);
+  return fmt(s);
+}
+function pad2(n) { return String(Math.max(0,n)).padStart(2, '0'); }
+
+/* ── API ─────────────────────────────────────────────────── */
+async function api(method, path) {
+  try {
+    const r = await fetch(path, { method });
+    return r.ok;
+  } catch { return false; }
+}
+async function fetchTracks() {
+  try {
+    const r = await fetch('/tracks');
+    if (r.ok) tracks = await r.json();
+  } catch {}
+}
+
+/* ── Cover ───────────────────────────────────────────────── */
+function updateCover(url) {
+  // Skip only if same URL and already loaded successfully
+  if (url === coverUrl && coverLoaded) return;
+  coverUrl = url;
+  const img = document.getElementById('cover');
+  const ph  = document.getElementById('cover-ph');
+  if (!url) {
+    img.classList.remove('loaded'); img.src = ''; ph.style.display = '';
+    coverLoaded = false; return;
+  }
+  img.classList.remove('loaded');
+  img.onload  = () => { img.classList.add('loaded'); ph.style.display = 'none'; coverLoaded = true; };
+  img.onerror = () => { ph.style.display = ''; coverLoaded = false; };
+  img.src = url + '?t=' + Date.now();
+}
+
+/* ── Track dots ──────────────────────────────────────────── */
+function renderDots(cur, total) {
+  const el = document.getElementById('vfd-dots');
+  if (!total) { el.innerHTML = ''; return; }
+  el.innerHTML = '';
+  for (let i = 1; i <= total; i++) {
+    const d = document.createElement('div');
+    d.className = 'vfd-td' +
+      (i < cur  ? ' done'    : '') +
+      (i === cur ? ' current' : '');
+    el.appendChild(d);
+  }
+}
+
+/* ── Track list ──────────────────────────────────────────── */
+function renderTracklist() {
+  const el = document.getElementById('tl-body');
+  el.innerHTML = '';
+  tracks.forEach(t => {
+    const row = document.createElement('div');
+    row.className = 'track-row' + (t.number === state.track_number ? ' active' : '');
+    row.innerHTML =
+      `<span class="track-num">${pad2(t.number)}</span>` +
+      `<div class="track-pip"></div>` +
+      `<span class="track-name">${t.title || 'Track ' + t.number}</span>` +
+      `<span class="track-dur">${fmt(t.duration)}</span>`;
+    row.addEventListener('click', () => api('POST', '/play/' + t.number));
+    el.appendChild(row);
+  });
+  document.getElementById('tl-count').textContent =
+    tracks.length ? tracks.length + ' · ' + totalTime(tracks) : '—';
+}
+
+/* ── VFD ─────────────────────────────────────────────────── */
+function setInd(id, on) {
+  document.getElementById(id).classList.toggle('on', on);
+}
+function updateVfd(s) {
+  const playing = s.state === 'playing';
+  const paused  = s.state === 'paused';
+  const active  = playing || paused;
+  const hasDisc = s.state !== 'idle';
+
+  setInd('ind-play',  playing);
+  setInd('ind-pause', paused);
+  setInd('ind-stop',  !active);
+
+  const pulse = document.getElementById('vfd-pulse');
+  pulse.className = 'vfd-pulse' + (playing ? ' playing' : paused ? ' paused' : '');
+
+  const labels = { idle:'NO DISC', loaded:'READY', playing:'PLAYING', paused:'PAUSE' };
+  document.getElementById('vfd-label').textContent =
+    s.loading    ? 'READING'  :
+    s.buffering  ? 'STARTING' :
+    (labels[s.state] || s.state.toUpperCase());
+  if (s.loading || s.buffering) pulse.className = 'vfd-pulse playing';
+
+  const elapsed  = parseFloat(s.elapsed)  || 0;
+  const duration = parseFloat(s.duration) || 0;
+  const remain   = Math.max(0, duration - elapsed);
+
+  // Digits
+  const dimClass  = hasDisc ? '' : ' dim';
+  const aDimClass = active  ? '' : ' dim';
+
+  document.getElementById('d-track').className   = 'vfd-digit vfd-digit-xl'  + dimClass;
+  document.getElementById('d-elapsed').className = 'vfd-digit vfd-digit-lg'  + aDimClass;
+  document.getElementById('d-remain').className  = 'vfd-digit vfd-digit-md dim';
+  document.getElementById('d-of').className      = 'vfd-digit vfd-digit-sm dim';
+
+  document.getElementById('d-track').textContent   = s.track_number ? pad2(s.track_number) : '--';
+  document.getElementById('d-elapsed').textContent = active ? fmt(elapsed)   : '--:--';
+  document.getElementById('d-remain').textContent  = active ? fmt(remain)    : '--:--';
+  document.getElementById('d-of').textContent      =
+    (s.track_number && s.tracks_total)
+      ? pad2(s.track_number) + ' / ' + pad2(s.tracks_total)
+      : '-- / --';
+}
+
+/* ── State rendering ─────────────────────────────────────── */
+async function applyState(s) {
+  try {
+
+    const discChanged  = s.disc_id       !== state.disc_id;
+    if (discChanged) { coverUrl = null; coverLoaded = false; }
+    const trackChanged = s.track_number  !== state.track_number;
+    state = s;
+
+    const playing  = s.state === 'playing';
+    const paused   = s.state === 'paused';
+    const active   = playing || paused;
+    const hasDisc  = s.state !== 'idle';
+    const elapsed  = parseFloat(s.elapsed)  || 0;
+    const duration = parseFloat(s.duration) || 0;
+    const remain   = Math.max(0, duration - elapsed);
+    const pct      = duration > 0 ? Math.min(100, elapsed / duration * 100) : 0;
+
+    /* Elapsed interpolation — anchor to server value on every update */
+    if (playing) {
+      _elapsedBase  = elapsed;
+      _elapsedBaseTs = performance.now();
+      _startTick();
+    } else {
+      _stopTick();
+    }
+
+    /* VFD */
+    updateVfd(s);
+
+    /* Metadata */
+    document.getElementById('meta-track').textContent =
+      s.track_title || (hasDisc ? (s.album ? 'Track ' + (s.track_number || '—') : '—') : 'NO DISC');
+    document.getElementById('meta-album').textContent  = s.album  || '—';
+    document.getElementById('meta-artist').textContent = s.artist || '—';
+
+    /* Cover-side meta */
+    document.getElementById('cover-album').textContent =
+      s.album && s.artist ? s.artist + ' — ' + s.album : s.album || s.artist || '—';
+    document.getElementById('cover-format').className =
+      'cover-meta-format' + (active ? ' active' : '');
+
+    /* Cover art */
+    updateCover(hasDisc ? '/cover' : null);
+
+    /* Progress */
+    document.getElementById('prog-fill').style.width = pct + '%';
+    document.getElementById('prog-head').style.left  = pct + '%';
+    document.getElementById('t-elapsed').textContent = fmt(elapsed);
+    document.getElementById('t-remain').textContent  = active ? ('\u2212' + fmt(remain)) : '\u22120:00';
+
+    /* Buttons */
+    document.getElementById('btn-play-icon').textContent = playing ? '⏸' : '▶';
+    document.getElementById('btn-play').disabled = !hasDisc;
+    document.getElementById('btn-prev').disabled = !active;
+    document.getElementById('btn-next').disabled = !active;
+    document.getElementById('btn-stop').disabled = !active;
+
+    /* Tracks + dots */
+    if (discChanged || tracks.length === 0) {
+      await fetchTracks();
+      renderDots(s.track_number, s.tracks_total);
+      renderTracklist();
+      /* Tick marks per track */
+      const ticks = document.getElementById('track-ticks');
+      ticks.innerHTML = '';
+      tracks.forEach(() => {
+        const t = document.createElement('div');
+        t.className = 'track-tick';
+        ticks.appendChild(t);
+      });
+      /* Footer + disc info */
+      const discInfo = tracks.length
+        ? tracks.length + ' tracks · ' + totalTime(tracks)
+        : '—';
+      document.getElementById('footer-right').textContent    = discInfo.toUpperCase();
+      document.getElementById('t-disc-info').textContent     =
+        tracks.length ? 'DISC  ' + totalTime(tracks) : '';
+    } else if (trackChanged) {
+      renderDots(s.track_number, s.tracks_total);
+      renderTracklist();
+    }
+
+  } catch { /* ignore render errors */ }
+}
+
+async function poll() {
+  try {
+    const r = await fetch('/status');
+    if (!r.ok) throw new Error();
+    await applyState(await r.json());
+  } catch {
+    document.getElementById('vfd-label').textContent = 'OFFLINE';
+    document.getElementById('vfd-pulse').className   = 'vfd-pulse';
+  }
+}
+
+/* ── Elapsed tick (client-side interpolation) ────────────── */
+function _startTick() {
+  if (_tickTimer !== null) return;
+  function tick() {
+    if (state.state !== 'playing') { _tickTimer = null; return; }
+    const dt  = (performance.now() - _elapsedBaseTs) / 1000;
+    const dur = parseFloat(state.duration) || 0;
+    const el  = dur > 0 ? Math.min(_elapsedBase + dt, dur) : _elapsedBase + dt;
+    const rem = Math.max(0, dur - el);
+    const pct = dur > 0 ? Math.min(100, el / dur * 100) : 0;
+    document.getElementById('d-elapsed').textContent   = fmt(el);
+    document.getElementById('d-remain').textContent    = fmt(rem);
+    document.getElementById('t-elapsed').textContent   = fmt(el);
+    document.getElementById('t-remain').textContent    = '\u2212' + fmt(rem);
+    document.getElementById('prog-fill').style.width   = pct + '%';
+    document.getElementById('prog-head').style.left    = pct + '%';
+    _tickTimer = requestAnimationFrame(tick);
+  }
+  _tickTimer = requestAnimationFrame(tick);
+}
+function _stopTick() {
+  if (_tickTimer !== null) { cancelAnimationFrame(_tickTimer); _tickTimer = null; }
+}
+
+/* ── WebSocket ───────────────────────────────────────────── */
+let _ws = null;
+let _wsFallback = null;
+let _wsRetry = null;
+
+function connectWS() {
+  if (_ws && _ws.readyState < 2) return;  // already connecting or open
+  _ws = new WebSocket(`ws://${location.host}/ws`);
+
+  _ws.onopen = () => {
+    clearInterval(_wsFallback); _wsFallback = null;
+    clearTimeout(_wsRetry);     _wsRetry    = null;
+  };
+
+  _ws.onmessage = (ev) => {
+    try { applyState(JSON.parse(ev.data)); } catch {}
+  };
+
+  // onerror is always followed by onclose — ignore it to prevent double-fire
+  _ws.onerror = () => {};
+
+  _ws.onclose = () => {
+    _ws = null;
+    if (!_wsFallback) {
+      poll();
+      _wsFallback = setInterval(poll, 2000);
+    }
+    if (!_wsRetry) {
+      _wsRetry = setTimeout(() => { _wsRetry = null; connectWS(); }, 3000);
+    }
+  };
+}
+
+// Reconnect immediately when the tab becomes visible again
+document.addEventListener('visibilitychange', () => {
+  if (!document.hidden) connectWS();
+});
+
+connectWS();
+
+/* ── Controls ────────────────────────────────────────────── */
+document.getElementById('btn-play').addEventListener('click', async () => {
+  if (state.state === 'playing' || state.state === 'paused')
+    await api('POST', '/pause');
+  else
+    await api('POST', '/play');
+});
+document.getElementById('btn-prev').addEventListener('click', () => api('POST', '/prev'));
+document.getElementById('btn-next').addEventListener('click', () => api('POST', '/next'));
+document.getElementById('btn-stop').addEventListener('click', () => api('POST', '/stop'));
+
+/* ── Track list toggle ───────────────────────────────────── */
+// Apply initial expanded state
+document.getElementById('tl-body').classList.toggle('open', tlOpen);
+document.getElementById('tl-chevron').classList.toggle('open', tlOpen);
+
+document.getElementById('tl-toggle').addEventListener('click', () => {
+  tlOpen = !tlOpen;
+  document.getElementById('tl-body').classList.toggle('open', tlOpen);
+  document.getElementById('tl-chevron').classList.toggle('open', tlOpen);
+});
+
+/* ── Theme toggle ────────────────────────────────────────── */
+function applyTheme(light) {
+  document.documentElement.classList.toggle('light', light);
+  document.getElementById('btn-theme').textContent = light ? '☾' : '☀';
+  document.querySelector('meta[name="theme-color"]').content = light ? '#c8c4bc' : '#1b1915';
+}
+// Restore saved preference
+applyTheme(localStorage.getItem('cdp-theme') === 'light');
+
+document.getElementById('btn-theme').addEventListener('click', () => {
+  const light = !document.documentElement.classList.contains('light');
+  localStorage.setItem('cdp-theme', light ? 'light' : 'dark');
+  applyTheme(light);
+});
+
+/* ── Initial load ────────────────────────────────────────── */
+poll();
+</script>
+</body>
+</html>

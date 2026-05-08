@@ -1,0 +1,40 @@
+[Unit]
+Description=CDPcore Backend (FastAPI/uvicorn)
+After=network.target network-online.target sound.target
+Wants=network-online.target
+Before=cdpcore-extension.service
+
+[Service]
+Type=simple
+User=cdplayer
+Group=cdplayer
+
+WorkingDirectory=/opt/cdpcore/backend
+
+Environment=VIRTUAL_ENV=/opt/cdpcore/venv
+Environment=PATH=/opt/cdpcore/venv/bin:/usr/local/bin:/usr/bin:/bin
+Environment=CDROM_DEVICE=/dev/cdrom
+Environment=CD_CACHE_DIR=/var/cache/cd-player
+
+# Admin auth posture (see docs/agent_reasoning.md D-2).
+# "pin" = PIN-gated /system/* (community default).
+# "off" = explicit opt-out for self-managed private installs.
+Environment=CDPCORE_ADMIN_AUTH=pin
+
+ExecStart=/opt/cdpcore/venv/bin/uvicorn main:app     --host 0.0.0.0     --port 8000     --workers 1     --log-level info     --no-access-log
+
+Restart=always
+RestartSec=5
+
+NoNewPrivileges=no
+PrivateTmp=no
+ProtectSystem=strict
+ReadWritePaths=/var/cache/cd-player /var/log
+SupplementaryGroups=cdrom audio
+
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=cdpcore-backend
+
+[Install]
+WantedBy=multi-user.target

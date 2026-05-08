@@ -1,0 +1,27 @@
+# Credentials
+.creds
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+venv/
+.venv/
+
+# Node
+node_modules/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Internal / out-of-repo tooling
+docs/
+brandkit/
+tools/
+.claude/
+
+# Deploy and verification scripts (separate from the appliance code)
+deploy.py
+smoke.py
+verify_firstboot.py

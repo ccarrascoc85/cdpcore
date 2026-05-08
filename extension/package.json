@@ -1,0 +1,25 @@
+{
+  "name": "cdpcore-extension",
+  "version": "1.0.0",
+  "description": "Roon Extension for physical CD playback via USB DAC",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/ccarrascoc85/cdpcore.git"
+  },
+  "homepage": "https://github.com/ccarrascoc85/cdpcore",
+  "main": "app.js",
+  "scripts": {
+    "start": "node app.js",
+    "dev": "node --watch app.js"
+  },
+  "dependencies": {
+    "node-roon-api":           "RoonLabs/node-roon-api",
+    "node-roon-api-transport": "RoonLabs/node-roon-api-transport",
+    "node-roon-api-image":     "RoonLabs/node-roon-api-image",
+    "node-roon-api-settings":  "RoonLabs/node-roon-api-settings",
+    "node-fetch": "^2.7.0"
+  },
+  "engines": {
+    "node": ">=18.0.0"
+  }
+}

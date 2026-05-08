@@ -1,0 +1,554 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black">
+<meta name="theme-color" content="#1b1915">
+<link rel="icon" type="image/svg+xml" href="/favicon/favicon.svg">
+<link rel="icon" type="image/x-icon" href="/favicon.ico">
+<title>CDPcore · Admin</title>
+<style>
+*, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+:root {
+  --bg:         #1b1915;
+  --chassis:    #23201b;
+  --inset:      #1f1d17;
+  --amber:      #e8a028;
+  --amber-hi:   #f0b840;
+  --amber-dim:  #3d2a10;
+  --amber-glow: rgba(232,160,40,.22);
+  --seam:       #33302a;
+  --seam-hi:    #3f3d34;
+  --txt-hi:     #d8d0bc;
+  --txt-mid:    #8c8274;
+  --txt-lo:     #48433a;
+  --btn-face:   #2d2a22;
+  --btn-edge:   #3d382e;
+  --green:      #4a9e4a;
+  --red:        #b83c3c;
+}
+
+html { height: 100%; }
+body {
+  background: var(--bg);
+  color: var(--txt-hi);
+  font-family: -apple-system, BlinkMacSystemFont, 'Helvetica Neue', Arial, sans-serif;
+  min-height: 100dvh;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  padding: env(safe-area-inset-top,0) 0 env(safe-area-inset-bottom,24px);
+  user-select: none;
+  -webkit-tap-highlight-color: transparent;
+}
+
+.unit {
+  width: 100%;
+  max-width: 660px;
+  background: var(--chassis);
+  border: 1px solid #33302a;
+  border-top: 2px solid #3f3d34;
+  border-radius: 0 0 8px 8px;
+  overflow: hidden;
+  box-shadow: 0 2px 0 #1b1915, 0 8px 40px rgba(0,0,0,.8), 0 32px 64px rgba(0,0,0,.4);
+}
+
+.face-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 9px 18px 7px;
+  background: linear-gradient(180deg, #2d2a22 0%, #23201b 100%);
+  border-bottom: 1px solid var(--seam);
+}
+.face-brand {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  font-size: 8.5px;
+  letter-spacing: .28em;
+  text-transform: uppercase;
+  color: var(--txt-mid);
+  font-weight: 500;
+}
+.face-mark {
+  width: 14px;
+  height: 14px;
+  display: block;
+  flex-shrink: 0;
+  opacity: .88;
+}
+.face-model {
+  font-size: 10px;
+  letter-spacing: .18em;
+  text-transform: uppercase;
+  color: var(--txt-mid);
+  font-weight: 700;
+}
+.btn-icon {
+  background: none;
+  border: none;
+  color: var(--txt-mid);
+  font-size: 14px;
+  cursor: pointer;
+  padding: 4px 3px;
+  opacity: .7;
+  text-decoration: none;
+  display: flex;
+  align-items: center;
+  line-height: 1;
+}
+.btn-icon:hover { opacity: 1; color: var(--amber); }
+.btn-icon:active { opacity: .4; }
+
+.sys-body {
+  padding: 14px 18px 20px;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.card {
+  background: var(--inset);
+  border: 1px solid var(--seam);
+  border-radius: 4px;
+  overflow: hidden;
+}
+.card-title {
+  padding: 5px 12px 4px;
+  background: #1c1a15;
+  border-bottom: 1px solid var(--seam);
+  font-size: 8px;
+  letter-spacing: .30em;
+  text-transform: uppercase;
+  color: var(--txt-mid);
+  font-weight: 600;
+}
+
+.row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 6px 12px;
+  border-bottom: 1px solid var(--txt-lo);
+  gap: 8px;
+  min-height: 32px;
+}
+.row:last-child { border-bottom: none; }
+.row-label {
+  font-size: 11px;
+  color: var(--txt-mid);
+  flex-shrink: 0;
+  min-width: 120px;
+}
+.row-value {
+  font-size: 12px;
+  color: var(--txt-hi);
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+  word-break: break-all;
+}
+
+.dot {
+  display: inline-block;
+  width: 7px; height: 7px;
+  border-radius: 50%;
+  margin-right: 7px;
+  flex-shrink: 0;
+  vertical-align: middle;
+}
+.dot-ok   { background: var(--green); box-shadow: 0 0 5px var(--green); }
+.dot-bad  { background: var(--red);   box-shadow: 0 0 5px var(--red);   }
+.dot-unkn { background: var(--txt-lo); }
+
+.actions {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 8px;
+  padding: 10px 12px;
+}
+.btn-action {
+  background: var(--btn-face);
+  border: 1px solid var(--btn-edge);
+  border-radius: 3px;
+  color: var(--txt-hi);
+  font-size: 11px;
+  font-family: inherit;
+  letter-spacing: .04em;
+  padding: 9px 10px;
+  cursor: pointer;
+  text-align: center;
+  transition: background .12s, color .12s;
+}
+.btn-action:hover  { background: var(--seam-hi); color: var(--amber); }
+.btn-action:active { opacity: .5; }
+.btn-action.full   { grid-column: 1 / -1; }
+.btn-action:disabled,
+.btn-action[disabled] {
+  opacity: .4;
+  cursor: not-allowed;
+  color: var(--txt-lo);
+}
+.btn-action:disabled:hover,
+.btn-action[disabled]:hover { background: var(--btn-face); color: var(--txt-lo); }
+
+.pin-err {
+  color: var(--red);
+  font-size: 11px;
+  letter-spacing: .04em;
+  min-height: 14px;
+  text-align: center;
+  margin-top: -4px;
+}
+.pin-err:empty { display: none; }
+
+.pin-section {
+  padding: 14px 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  align-items: center;
+}
+.pin-input {
+  background: var(--inset);
+  border: 1px solid var(--seam-hi);
+  border-radius: 3px;
+  color: var(--txt-hi);
+  font-family: Menlo, monospace;
+  font-size: 14px;
+  letter-spacing: .32em;
+  padding: 8px 10px;
+  text-align: center;
+  width: 200px;
+  outline: none;
+}
+.pin-input:focus { border-color: var(--amber-dim); }
+.pin-input::placeholder { color: var(--txt-lo); letter-spacing: .04em; font-family: inherit; }
+.pin-note {
+  padding: 0 12px 12px;
+  font-size: 9px;
+  color: var(--txt-lo);
+  line-height: 1.5;
+  text-align: center;
+}
+
+.toast {
+  position: fixed;
+  bottom: 20px; left: 50%;
+  transform: translateX(-50%);
+  background: #2d2a22;
+  border: 1px solid var(--amber-dim);
+  color: var(--amber);
+  font-size: 11px;
+  letter-spacing: .06em;
+  padding: 8px 20px;
+  border-radius: 3px;
+  opacity: 0;
+  transition: opacity .2s;
+  pointer-events: none;
+  z-index: 99;
+  white-space: nowrap;
+}
+.toast.show { opacity: 1; }
+
+html.light {
+  --bg: #c8c4bc; --chassis: #dedad2; --inset: #ccc8c0;
+  --seam: #b8b4ac; --seam-hi: #c4c0b8;
+  --txt-hi: #2a2820; --txt-mid: #6a6058; --txt-lo: #b4b0a8;
+  --btn-face: #d4d0c8; --btn-edge: #c0bcb4;
+}
+html.light .face-header { background: linear-gradient(180deg, #dedad2 0%, #c8c4bc 100%); }
+html.light .card-title  { background: #d0ccc4; }
+
+@media (max-width: 480px) {
+  .sys-body { padding: 10px 12px 18px; }
+  .row-label { min-width: 100px; }
+}
+</style>
+<script src="/admin_gate.js"></script>
+</head>
+<body>
+<div class="unit">
+
+  <div class="face-header">
+    <div class="face-brand">
+      <a class="btn-icon" href="/system" title="Back to System">&#8592;</a>
+      <img class="face-mark" src="/favicon/symbol.svg" alt="">
+      <span>Admin</span>
+    </div>
+    <span class="face-model">Access</span>
+    <button class="btn-icon" id="btn-theme" title="Light / dark mode">☀</button>
+  </div>
+
+  <div class="sys-body">
+
+    <!-- Authentication -->
+    <div class="card">
+      <div class="card-title">Authentication</div>
+      <div class="row">
+        <span class="row-label">
+          <span class="dot dot-unkn" id="dot-auth"></span>Status
+        </span>
+        <span class="row-value" id="val-auth-label">—</span>
+      </div>
+      <div class="pin-note" id="auth-note" style="text-align:left;padding:6px 12px 8px">—</div>
+      <div class="pin-section" id="auth-pin-confirm" style="display:none;padding-top:4px">
+        <input id="inp-auth-pin" type="password" inputmode="numeric" pattern="[0-9]*"
+               maxlength="6" autocomplete="current-password" placeholder="Current PIN"
+               class="pin-input">
+        <div class="pin-err" id="auth-pin-err"></div>
+      </div>
+      <div class="actions">
+        <button class="btn-action full" id="btn-toggle-auth" onclick="toggleAuth()">—</button>
+      </div>
+    </div>
+
+    <!-- Session -->
+    <div class="card" id="card-session">
+      <div class="card-title">Session</div>
+      <div class="row">
+        <span class="row-label">
+          <span class="dot dot-unkn" id="dot-session"></span>State
+        </span>
+        <span class="row-value" id="val-state">—</span>
+      </div>
+      <div class="row">
+        <span class="row-label">Expires</span>
+        <span class="row-value" id="val-expires">—</span>
+      </div>
+      <div class="actions">
+        <button class="btn-action full" onclick="lockSession()">Lock Session</button>
+      </div>
+    </div>
+
+    <!-- Change / Set PIN -->
+    <div class="card" id="card-pin">
+      <div class="card-title" id="pin-card-title">Change PIN</div>
+      <div class="pin-section">
+        <input id="inp-pin-new" type="password" inputmode="numeric" pattern="[0-9]*"
+               maxlength="6" autocomplete="new-password" placeholder="New PIN"
+               class="pin-input">
+        <input id="inp-pin-confirm" type="password" inputmode="numeric" pattern="[0-9]*"
+               maxlength="6" autocomplete="new-password" placeholder="Confirm PIN"
+               class="pin-input">
+        <button class="btn-action" style="width:200px;margin-top:4px"
+                id="btn-pin-action" onclick="changePin()">Update PIN</button>
+      </div>
+      <div class="pin-note" id="pin-card-note">
+        Guards the <code>/system</code> pages. Existing admin sessions remain
+        valid until their 15-minute window expires.
+      </div>
+    </div>
+
+  </div>
+</div>
+
+<div class="toast" id="toast"></div>
+
+<script>
+/* ── Theme ───────────────────────────────────────────────── */
+function applyTheme(light) {
+  document.documentElement.classList.toggle('light', light);
+  document.getElementById('btn-theme').textContent = light ? '☾' : '☀';
+  document.querySelector('meta[name="theme-color"]').content = light ? '#c8c4bc' : '#1b1915';
+}
+applyTheme(localStorage.getItem('cdp-theme') === 'light');
+document.getElementById('btn-theme').addEventListener('click', () => {
+  const light = !document.documentElement.classList.contains('light');
+  localStorage.setItem('cdp-theme', light ? 'light' : 'dark');
+  applyTheme(light);
+});
+
+/* ── Toast ───────────────────────────────────────────────── */
+let _tt = null;
+function toast(msg, ms = 3000) {
+  const el = document.getElementById('toast');
+  el.textContent = msg;
+  el.classList.add('show');
+  clearTimeout(_tt);
+  _tt = setTimeout(() => el.classList.remove('show'), ms);
+}
+
+/* ── Session status ──────────────────────────────────────── */
+function fmtExpiry(ts) {
+  if (!ts) return '—';
+  const d = new Date(ts * 1000);
+  return d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+}
+
+let _currentMode = null;
+let _pinConfigured = false;
+
+function applyAuthMode(mode, pinConfigured) {
+  _currentMode = mode;
+  _pinConfigured = !!pinConfigured;
+  const dot   = document.getElementById('dot-auth');
+  const label = document.getElementById('val-auth-label');
+  const note  = document.getElementById('auth-note');
+  const btn   = document.getElementById('btn-toggle-auth');
+  const pinC  = document.getElementById('auth-pin-confirm');
+  const sess  = document.getElementById('card-session');
+
+  const pinTitle  = document.getElementById('pin-card-title');
+  const pinAction = document.getElementById('btn-pin-action');
+  const pinNote   = document.getElementById('pin-card-note');
+  if (mode === 'off') {
+    label.textContent = 'LAN-Trust — LAN open';
+    note.textContent  = _pinConfigured
+      ? 'A PIN is saved but the gate is off. Press Enable to activate it.'
+      : 'Anyone on this network can manage the appliance. '
+        + 'Save a 6-digit PIN below, then press Enable PIN-required.';
+    btn.textContent   = 'Enable PIN-required';
+    btn.disabled      = !_pinConfigured;
+    dot.className     = 'dot dot-bad';
+    pinC.style.display = 'none';
+    sess.style.display = 'none';
+    pinNote.innerHTML = _pinConfigured
+      ? 'Replaces the saved PIN. Gate remains off until you press <b>Enable PIN-required</b> above.'
+      : 'Stores a PIN without enabling the gate. '
+        + 'Press <b>Enable PIN-required</b> above to activate it.';
+  } else {
+    label.textContent = 'PIN required';
+    note.textContent  = 'The /system pages require a 6-digit PIN to manage.';
+    btn.textContent   = 'Switch to LAN-Trust';
+    btn.disabled      = false;
+    dot.className     = 'dot dot-ok';
+    sess.style.display = '';
+    pinNote.innerHTML = 'Guards the <code>/system</code> pages. Existing admin sessions remain '
+                      + 'valid until their 15-minute window expires.';
+  }
+  // Card title / button follow whether a PIN exists, not the current mode.
+  pinTitle.textContent  = _pinConfigured ? 'Change PIN' : 'Set PIN';
+  pinAction.textContent = _pinConfigured ? 'Update PIN' : 'Save PIN';
+  pinAction.onclick     = writePin;
+}
+
+async function refreshSession() {
+  try {
+    const r = await fetch('/admin/status', { credentials: 'same-origin' });
+    if (!r.ok) return;
+    const d = await r.json();
+    applyAuthMode(d.mode, d.pin_configured);
+    document.getElementById('val-state').textContent = d.unlocked ? 'Unlocked' : 'Locked';
+    document.getElementById('val-expires').textContent = fmtExpiry(d.expires_at);
+    const dot = document.getElementById('dot-session');
+    dot.className = 'dot ' + (d.unlocked ? 'dot-ok' : 'dot-bad');
+  } catch { /* keep last */ }
+}
+
+async function toggleAuth() {
+  if (_currentMode === 'off') {
+    // The button is disabled unless a PIN is saved, so reaching here implies
+    // one exists. Just flip the mode — no new PIN to submit.
+    if (!_pinConfigured) { toast('Save a 6-digit PIN below first', 3000); return; }
+    await submitMode('pin');
+    return;
+  }
+  // Switching from PIN → LAN-Trust. Require current PIN confirmation.
+  const pinInput = document.getElementById('auth-pin-confirm');
+  const inp = document.getElementById('inp-auth-pin');
+  const errEl = document.getElementById('auth-pin-err');
+  if (pinInput.style.display === 'none') {
+    pinInput.style.display = '';
+    inp.value = '';
+    if (errEl) errEl.textContent = '';
+    inp.focus();
+    toast('Enter current PIN then press the button again', 3500);
+    return;
+  }
+  const pin = (inp.value || '').trim();
+  if (!/^\d{6}$/.test(pin)) {
+    if (errEl) errEl.textContent = 'PIN must be 6 digits';
+    inp.focus();
+    return;
+  }
+  if (!confirm('Disable PIN gate? Anyone on the LAN will be able to manage this appliance.')) return;
+  const ok = await submitMode('off', { pin });
+  if (ok) {
+    inp.value = '';
+    pinInput.style.display = 'none';
+  }
+  // On failure: keep input + inline error visible for a retry.
+}
+
+async function submitMode(mode, extras) {
+  const errEl = document.getElementById('auth-pin-err');
+  if (errEl) errEl.textContent = '';
+  try {
+    const body = Object.assign({ mode }, extras || {});
+    const r = await fetch('/system/admin/set_mode', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
+    });
+    if (r.ok) {
+      toast(mode === 'off' ? 'LAN-Trust enabled' : 'PIN protection enabled', 3000);
+      refreshSession();
+      return true;
+    }
+    const d = await r.json().catch(() => ({}));
+    if (d.detail === 'invalid_pin' && errEl) {
+      // Inline in the auth card, not a global toast / unlock modal.
+      errEl.textContent = 'Wrong PIN';
+      const inp = document.getElementById('inp-auth-pin');
+      if (inp) { inp.focus(); inp.select(); }
+      return false;
+    }
+    const msg = d.detail === 'pin_required' ? 'Set a 6-digit PIN first'
+              : (d.detail || 'Request failed');
+    toast(msg, 3000);
+    return false;
+  } catch {
+    toast('Request failed', 3000);
+    return false;
+  }
+}
+
+async function lockSession() {
+  if (!confirm('Lock admin session?')) return;
+  try {
+    await fetch('/admin/lock', { method: 'POST', credentials: 'same-origin' });
+    toast('Session locked', 2000);
+    setTimeout(() => { window.location.href = '/'; }, 600);
+  } catch { toast('Request failed', 3000); }
+}
+
+/* ── Write PIN (create or replace) — does not change the mode ───── */
+async function writePin() {
+  const a = document.getElementById('inp-pin-new');
+  const b = document.getElementById('inp-pin-confirm');
+  const pin = (a.value || '').trim();
+  const confirmPin = (b.value || '').trim();
+  if (!/^\d{6}$/.test(pin)) { toast('PIN must be 6 digits', 3000); a.focus(); return; }
+  if (pin !== confirmPin)   { toast('PINs do not match', 3000); return; }
+  const wasConfigured = _pinConfigured;
+  try {
+    const r = await fetch('/system/admin/set_pin', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ new_pin: pin }),
+    });
+    if (r.ok) {
+      a.value = ''; b.value = '';
+      toast(wasConfigured ? 'PIN updated' : 'PIN saved', 2500);
+      refreshSession();  // re-reads pin_configured so the Enable button and card labels update
+    } else {
+      const d = await r.json().catch(() => ({}));
+      toast(d.detail || 'Request failed', 3000);
+    }
+  } catch { toast('Request failed', 3000); }
+}
+
+/* ── Init ────────────────────────────────────────────────── */
+document.getElementById('inp-auth-pin').addEventListener('input', () => {
+  const e = document.getElementById('auth-pin-err');
+  if (e) e.textContent = '';
+});
+refreshSession();
+setInterval(refreshSession, 5000);
+</script>
+</body>
+</html>

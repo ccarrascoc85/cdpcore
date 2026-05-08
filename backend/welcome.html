@@ -1,0 +1,415 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black">
+<meta name="theme-color" content="#1b1915">
+<link rel="icon" type="image/svg+xml" href="/favicon/favicon.svg">
+<link rel="icon" type="image/x-icon" href="/favicon.ico">
+<title>CDPcore · Welcome</title>
+<style>
+*, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+:root {
+  --bg:         #1b1915;
+  --chassis:    #23201b;
+  --inset:      #1f1d17;
+  --amber:      #e8a028;
+  --amber-hi:   #f0b840;
+  --amber-dim:  #3d2a10;
+  --amber-glow: rgba(232,160,40,.22);
+  --seam:       #33302a;
+  --seam-hi:    #3f3d34;
+  --txt-hi:     #d8d0bc;
+  --txt-mid:    #8c8274;
+  --txt-lo:     #48433a;
+  --btn-face:   #2d2a22;
+  --btn-edge:   #3d382e;
+  --green:      #4a9e4a;
+  --red:        #b83c3c;
+}
+
+html { height: 100%; }
+body {
+  background: var(--bg);
+  color: var(--txt-hi);
+  font-family: -apple-system, BlinkMacSystemFont, 'Helvetica Neue', Arial, sans-serif;
+  min-height: 100dvh;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  padding: env(safe-area-inset-top,0) 0 env(safe-area-inset-bottom,24px);
+  user-select: none;
+  -webkit-tap-highlight-color: transparent;
+}
+
+.unit {
+  width: 100%;
+  max-width: 760px;
+  background: var(--chassis);
+  border: 1px solid #33302a;
+  border-top: 2px solid #3f3d34;
+  border-radius: 0 0 8px 8px;
+  overflow: hidden;
+  box-shadow: 0 2px 0 #1b1915, 0 8px 40px rgba(0,0,0,.8), 0 32px 64px rgba(0,0,0,.4);
+}
+
+.face-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 9px 18px 7px;
+  background: linear-gradient(180deg, #2d2a22 0%, #23201b 100%);
+  border-bottom: 1px solid var(--seam);
+}
+.face-brand {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  font-size: 8.5px;
+  letter-spacing: .28em;
+  text-transform: uppercase;
+  color: var(--txt-mid);
+  font-weight: 500;
+}
+.face-mark {
+  width: 14px;
+  height: 14px;
+  display: block;
+  flex-shrink: 0;
+  opacity: .88;
+}
+.face-model {
+  font-size: 10px;
+  letter-spacing: .18em;
+  text-transform: uppercase;
+  color: var(--txt-mid);
+  font-weight: 700;
+}
+.btn-icon {
+  background: none;
+  border: none;
+  color: var(--txt-mid);
+  font-size: 14px;
+  cursor: pointer;
+  padding: 4px 3px;
+  opacity: .7;
+  text-decoration: none;
+  display: flex;
+  align-items: center;
+  line-height: 1;
+}
+.btn-icon:hover { opacity: 1; color: var(--amber); }
+.btn-icon:active { opacity: .4; }
+
+.sys-body {
+  padding: 18px 18px 22px;
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+
+.intro {
+  font-size: 12.5px;
+  color: var(--txt-mid);
+  line-height: 1.55;
+  padding: 0 4px;
+}
+.intro strong { color: var(--txt-hi); font-weight: 600; }
+
+.choices {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 12px;
+}
+@media (max-width: 640px) {
+  .choices { grid-template-columns: 1fr; }
+}
+
+.card {
+  background: var(--inset);
+  border: 1px solid var(--seam);
+  border-radius: 4px;
+  overflow: hidden;
+  display: flex;
+  flex-direction: column;
+}
+.card-title {
+  padding: 5px 12px 4px;
+  background: #1c1a15;
+  border-bottom: 1px solid var(--seam);
+  font-size: 8px;
+  letter-spacing: .30em;
+  text-transform: uppercase;
+  color: var(--txt-mid);
+  font-weight: 600;
+}
+.card-body {
+  padding: 12px 12px 10px;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  flex: 1;
+}
+.card-blurb {
+  font-size: 11px;
+  color: var(--txt-mid);
+  line-height: 1.5;
+}
+.card-blurb .tag-ok  { color: var(--green); font-weight: 600; }
+.card-blurb .tag-bad { color: var(--red);   font-weight: 600; }
+
+.pin-input {
+  background: var(--bg);
+  border: 1px solid var(--seam-hi);
+  border-radius: 3px;
+  color: var(--txt-hi);
+  font-family: Menlo, monospace;
+  font-size: 14px;
+  letter-spacing: .32em;
+  padding: 8px 10px;
+  text-align: center;
+  width: 100%;
+  outline: none;
+}
+.pin-input:focus { border-color: var(--amber-dim); }
+.pin-input::placeholder { color: var(--txt-lo); letter-spacing: .04em; font-family: inherit; }
+
+.check-row {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  font-size: 11px;
+  color: var(--txt-mid);
+  line-height: 1.45;
+  cursor: pointer;
+}
+.check-row input {
+  accent-color: var(--amber);
+  margin-top: 2px;
+  flex-shrink: 0;
+}
+
+.btn-action {
+  background: var(--btn-face);
+  border: 1px solid var(--btn-edge);
+  border-radius: 3px;
+  color: var(--txt-hi);
+  font-size: 11px;
+  font-family: inherit;
+  letter-spacing: .04em;
+  padding: 10px 12px;
+  cursor: pointer;
+  text-align: center;
+  transition: background .12s, color .12s, opacity .12s;
+  margin-top: auto;
+}
+.btn-action:hover:not(:disabled)  { background: var(--seam-hi); color: var(--amber); }
+.btn-action:active { opacity: .5; }
+.btn-action:disabled { opacity: .4; cursor: not-allowed; }
+
+.footnote {
+  font-size: 10px;
+  color: var(--txt-lo);
+  text-align: center;
+  line-height: 1.5;
+  padding: 6px 4px 0;
+}
+
+.toast {
+  position: fixed;
+  bottom: 20px; left: 50%;
+  transform: translateX(-50%);
+  background: #2d2a22;
+  border: 1px solid var(--amber-dim);
+  color: var(--amber);
+  font-size: 11px;
+  letter-spacing: .06em;
+  padding: 8px 20px;
+  border-radius: 3px;
+  opacity: 0;
+  transition: opacity .2s;
+  pointer-events: none;
+  z-index: 99;
+  white-space: nowrap;
+}
+.toast.show { opacity: 1; }
+
+html.light {
+  --bg: #c8c4bc; --chassis: #dedad2; --inset: #ccc8c0;
+  --seam: #b8b4ac; --seam-hi: #c4c0b8;
+  --txt-hi: #2a2820; --txt-mid: #6a6058; --txt-lo: #b4b0a8;
+  --btn-face: #d4d0c8; --btn-edge: #c0bcb4;
+}
+html.light .face-header { background: linear-gradient(180deg, #dedad2 0%, #c8c4bc 100%); }
+html.light .card-title  { background: #d0ccc4; }
+</style>
+</head>
+<body>
+<div class="unit">
+
+  <div class="face-header">
+    <div class="face-brand">
+      <img class="face-mark" src="/favicon/symbol.svg" alt="">
+      <span>Welcome</span>
+    </div>
+    <span class="face-model">First-time setup</span>
+    <button class="btn-icon" id="btn-theme" title="Light / dark mode">☀</button>
+  </div>
+
+  <div class="sys-body">
+
+    <div class="intro">
+      This is a fresh CDPcore install. Choose how to protect the
+      <strong>/system</strong> management pages. You can change this later
+      from <strong>/system/admin</strong>.
+    </div>
+
+    <div class="choices">
+
+      <!-- PIN -->
+      <div class="card">
+        <div class="card-title">PIN-protected</div>
+        <div class="card-body">
+          <div class="card-blurb">
+            A 6-digit PIN guards the management pages.
+            <span class="tag-ok">Recommended</span> for shared or community
+            spaces, or when the appliance is exposed to untrusted networks.
+          </div>
+          <input id="inp-pin" type="password" inputmode="numeric" pattern="[0-9]*"
+                 maxlength="6" autocomplete="new-password" placeholder="New PIN"
+                 class="pin-input">
+          <input id="inp-pin-confirm" type="password" inputmode="numeric" pattern="[0-9]*"
+                 maxlength="6" autocomplete="new-password" placeholder="Confirm PIN"
+                 class="pin-input">
+          <button class="btn-action" id="btn-pin" onclick="submitPin()">Set PIN and continue</button>
+        </div>
+      </div>
+
+      <!-- LAN-Trust -->
+      <div class="card">
+        <div class="card-title">LAN-Trust</div>
+        <div class="card-body">
+          <div class="card-blurb">
+            No PIN required. Anyone on the local network can manage this
+            appliance. <span class="tag-bad">Home use only</span> — suitable
+            when the LAN is already private and trusted.
+          </div>
+          <label class="check-row">
+            <input type="checkbox" id="chk-lan">
+            <span>I understand — my LAN is private and I accept that anyone on it can manage this appliance.</span>
+          </label>
+          <button class="btn-action" id="btn-lan" onclick="submitLan()" disabled>Continue without PIN</button>
+        </div>
+      </div>
+
+    </div>
+
+    <div class="footnote">
+      The setup endpoint is one-shot. Once either option is saved,
+      this screen will no longer appear.
+    </div>
+
+  </div>
+</div>
+
+<div class="toast" id="toast"></div>
+
+<script>
+/* ── Theme ───────────────────────────────────────────────── */
+function applyTheme(light) {
+  document.documentElement.classList.toggle('light', light);
+  document.getElementById('btn-theme').textContent = light ? '☾' : '☀';
+  document.querySelector('meta[name="theme-color"]').content = light ? '#c8c4bc' : '#1b1915';
+}
+applyTheme(localStorage.getItem('cdp-theme') === 'light');
+document.getElementById('btn-theme').addEventListener('click', () => {
+  const light = !document.documentElement.classList.contains('light');
+  localStorage.setItem('cdp-theme', light ? 'light' : 'dark');
+  applyTheme(light);
+});
+
+/* ── Toast ───────────────────────────────────────────────── */
+let _tt = null;
+function toast(msg, ms = 3000) {
+  const el = document.getElementById('toast');
+  el.textContent = msg;
+  el.classList.add('show');
+  clearTimeout(_tt);
+  _tt = setTimeout(() => el.classList.remove('show'), ms);
+}
+
+/* ── If setup already done, leave ────────────────────────── */
+(async function redirectIfDone() {
+  try {
+    const r = await fetch('/admin/setup_required', { credentials: 'same-origin' });
+    if (!r.ok) return;
+    const d = await r.json();
+    if (!d.required) window.location.replace('/');
+  } catch { /* stay on welcome */ }
+})();
+
+/* ── LAN-Trust checkbox gates its button ─────────────────── */
+document.getElementById('chk-lan').addEventListener('change', (e) => {
+  document.getElementById('btn-lan').disabled = !e.target.checked;
+});
+
+/* ── Submit actions ──────────────────────────────────────── */
+async function submitPin() {
+  const a = document.getElementById('inp-pin');
+  const b = document.getElementById('inp-pin-confirm');
+  const pin  = (a.value || '').trim();
+  const conf = (b.value || '').trim();
+  if (!/^\d{6}$/.test(pin)) { toast('PIN must be 6 digits', 3000); a.focus(); return; }
+  if (pin !== conf)          { toast('PINs do not match', 3000); b.focus(); return; }
+  const btn = document.getElementById('btn-pin');
+  btn.disabled = true;
+  try {
+    const r = await fetch('/admin/setup', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      credentials: 'same-origin',
+      body: JSON.stringify({ mode: 'pin', pin }),
+    });
+    if (r.ok) {
+      toast('PIN set — continuing…', 2000);
+      setTimeout(() => { window.location.replace('/'); }, 700);
+    } else {
+      const d = await r.json().catch(() => ({}));
+      toast(d.detail || 'Setup failed', 3000);
+      btn.disabled = false;
+    }
+  } catch {
+    toast('Network error', 3000);
+    btn.disabled = false;
+  }
+}
+
+async function submitLan() {
+  const btn = document.getElementById('btn-lan');
+  btn.disabled = true;
+  try {
+    const r = await fetch('/admin/setup', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      credentials: 'same-origin',
+      body: JSON.stringify({ mode: 'off' }),
+    });
+    if (r.ok) {
+      toast('LAN-Trust enabled — continuing…', 2000);
+      setTimeout(() => { window.location.replace('/'); }, 700);
+    } else {
+      const d = await r.json().catch(() => ({}));
+      toast(d.detail || 'Setup failed', 3000);
+      btn.disabled = false;
+    }
+  } catch {
+    toast('Network error', 3000);
+    btn.disabled = false;
+  }
+}
+</script>
+</body>
+</html>
