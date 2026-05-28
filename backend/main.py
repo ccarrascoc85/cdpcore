@@ -4,6 +4,7 @@ Exposes REST API on localhost:8000 for CD playback control.
 """
 import asyncio
 import logging
+import mimetypes
 import os
 from pathlib import Path
 from typing import List, Optional
@@ -35,6 +36,7 @@ logging.getLogger("musicbrainzngs").setLevel(logging.WARNING)
 logger = logging.getLogger("cd_player")
 
 app = FastAPI(title="CDPcore Backend", version="1.0.0")
+mimetypes.add_type("application/manifest+json", ".webmanifest")
 app.mount("/favicon", StaticFiles(directory="favicon"), name="favicon")
 
 

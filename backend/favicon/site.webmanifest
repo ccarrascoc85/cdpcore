@@ -1,1 +1,14 @@
-{"name":"","short_name":"","icons":[{"src":"/android-chrome-192x192.png","sizes":"192x192","type":"image/png"},{"src":"/android-chrome-512x512.png","sizes":"512x512","type":"image/png"}],"theme_color":"#ffffff","background_color":"#ffffff","display":"standalone"}
+{
+  "name": "CDPcore",
+  "short_name": "CDPcore",
+  "id": "/",
+  "start_url": "/",
+  "scope": "/",
+  "display": "standalone",
+  "theme_color": "#1b1915",
+  "background_color": "#1b1915",
+  "icons": [
+    {"src": "/favicon/android-chrome-192x192.png", "sizes": "192x192", "type": "image/png"},
+    {"src": "/favicon/android-chrome-512x512.png", "sizes": "512x512", "type": "image/png"}
+  ]
+}

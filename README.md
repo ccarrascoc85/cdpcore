@@ -205,6 +205,7 @@ The CDPcore interface is served at `http://cdpcore.local:8000/` and provides:
 - Light / dark mode toggle (persisted in localStorage)
 - Responsive layout for mobile (<= 576 px breakpoint)
 - Gear icon linking to the system management page
+- Installable to the home screen as a standalone app (Samsung Internet on Android, Safari on iOS) via Add to Home Screen
 
 The UI connects to `/ws` via WebSocket on load. The server pushes a state snapshot every second (for elapsed time) and immediately on any state change (disc insert, track advance, play/pause/stop, eject). If the WebSocket drops, the UI falls back to polling `/status` every 2 s and reconnects automatically.
 
