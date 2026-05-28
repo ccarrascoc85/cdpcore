@@ -521,7 +521,7 @@ Settings are persisted at `/home/cdplayer/.config/cdpcore-extension/settings.jso
 ```bash
 # Health check
 curl http://localhost:8000/health
-# Expected: {"status":"ok"}
+# Expected: {"status":"ok","version":"1.0.1"}
 
 # Check whether first-time setup is pending
 curl http://localhost:8000/admin/setup_required

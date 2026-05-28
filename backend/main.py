@@ -35,7 +35,17 @@ logging.basicConfig(
 logging.getLogger("musicbrainzngs").setLevel(logging.WARNING)
 logger = logging.getLogger("cd_player")
 
-app = FastAPI(title="CDPcore Backend", version="1.0.0")
+
+def _read_version() -> str:
+    try:
+        return (Path(__file__).parent / "VERSION").read_text(encoding="utf-8").strip()
+    except OSError:
+        return "0.0.0"
+
+
+__version__ = _read_version()
+
+app = FastAPI(title="CDPcore Backend", version=__version__)
 mimetypes.add_type("application/manifest+json", ".webmanifest")
 app.mount("/favicon", StaticFiles(directory="favicon"), name="favicon")
 
@@ -864,7 +874,7 @@ def select_device(device_id: str):
 
 @app.get("/health")
 def health():
-    return {"status": "ok"}
+    return {"status": "ok", "version": __version__}
 
 
 # ---------------------------------------------------------------------------
