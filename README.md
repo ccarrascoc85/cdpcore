@@ -222,10 +222,17 @@ A separate administrative surface at `http://cdpcore.local:8000/system` provides
 - **Roon Bridge / Extension** - service status, PID, settings, and extension actions
 - **Admin Settings** - admin PIN change and auth-mode change (`PIN` or explicit `LAN-Trust`)
 - **Audio** - current audio device state (USB DAC / Multiple DACs / No USB DAC / Audio device missing) with the selected DAC name when applicable, updated automatically
+- **Updates** - operator-initiated update checks and release updates from the latest tagged GitHub Release
 - **Backend Logs** - last 150 lines of the backend service journal, with a refresh button
 - **Actions** - restart backend, restart all, reboot Pi, power off Pi
 
 Actions that terminate the backend process (restart, reboot, poweroff) execute with a short delay so the HTTP response is delivered first. All destructive actions require confirmation. The `cdplayer` service user is granted minimal sudo rights for these operations via `/etc/sudoers.d/cdpcore`.
+
+Updates are checked only from the system management page. Pressing **Update**
+starts a root-owned one-shot executor that downloads the latest tagged GitHub
+Release source tarball, updates `/opt/cdpcore/backend` and
+`/opt/cdpcore/extension`, installs changed dependencies, and restarts CDPcore.
+Operator state lives outside `/opt/cdpcore` and is not overwritten by this flow.
 
 > **Roon Bridge coexistence:** CDPcore is designed to run alongside Roon Bridge on the same appliance. The system pages manage the `roonbridge.service` unit and extension behavior; the Roon extension pauses the active zone when CD playback starts and can resume it when playback stops - both systems share the same USB DAC without conflict.
 
@@ -242,7 +249,7 @@ Everything under the appliance-management surface (`/system`, `/system/network`,
 - **Brute-force protection.** `/admin/unlock` enforces a per-IP failure tracker (in-process). The first three failures only carry the baseline 200 ms delay; after that the imposed delay grows exponentially up to 30 s. A successful unlock or 10 minutes of inactivity resets the counter for that IP.
 - **Cross-origin defense.** `/admin/unlock` and `/admin/setup` reject browser POSTs whose `Origin` (or `Referer`, when `Origin` is absent) does not match the request's `Host`. CLI/script callers without those headers are still allowed.
 - **Defensive headers.** Every response carries `X-Frame-Options: DENY`, `X-Content-Type-Options: nosniff`, `Referrer-Policy: same-origin`, and a `Content-Security-Policy` that blocks framing and locks default sources to the appliance origin (cover-art `img-src` allows third-party HTTPS).
-- **Privileged surface.** `system/cdpcore-sudoers` only authorises specific verb tails (`nmcli connection modify *`, `nmcli connection up *`, `nmcli connection delete *`, `nmcli radio wifi on/off`, `nmcli device wifi rescan`, `nmcli device wifi connect *`, `hostnamectl set-hostname *`). Backend validators in `backend/network.py` further restrict argument shapes (IPv4, RFC 1123 hostname, NetworkManager connection-name whitelist) so the wildcards cannot be abused via API input.
+- **Privileged surface.** `system/cdpcore-sudoers` only authorises specific verb tails (`systemctl restart cdpcore-backend`, `systemctl restart cdpcore-extension`, `systemctl start cdpcore-update`, `nmcli connection modify *`, `nmcli connection up *`, `nmcli connection delete *`, `nmcli radio wifi on/off`, `nmcli device wifi rescan`, `nmcli device wifi connect *`, `hostnamectl set-hostname *`). Backend validators in `backend/network.py` further restrict argument shapes (IPv4, RFC 1123 hostname, NetworkManager connection-name whitelist) so the wildcards cannot be abused via API input.
 - **Change PIN.** On the appliance:
   ```bash
   sudo -u cdplayer /opt/cdpcore/venv/bin/python -m auth rotate
@@ -399,7 +406,8 @@ sudo install -d -m 0700 -o cdplayer -g cdplayer /home/cdplayer/.config/cdpcore-b
 sudo install -m 440 /opt/cdpcore/system/cdpcore-sudoers /etc/sudoers.d/cdpcore
 ```
 
-This grants `cdplayer` the ability to restart services and reboot/poweroff via the system management page.
+This grants `cdplayer` the ability to restart services, reboot/poweroff, and
+start the bounded `cdpcore-update` one-shot via the system management page.
 
 #### 10. udev rules
 
@@ -410,10 +418,12 @@ sudo cp /opt/cdpcore/system/cd-inserted.sh         /usr/local/bin/
 sudo cp /opt/cdpcore/system/cd-ejected.sh          /usr/local/bin/
 sudo cp /opt/cdpcore/system/cd-setspeed.sh         /usr/local/bin/
 sudo cp /opt/cdpcore/system/audio-device-change.sh /usr/local/bin/
+sudo cp /opt/cdpcore/system/cdpcore-update         /usr/local/bin/
 sudo chmod +x /usr/local/bin/cd-inserted.sh \
               /usr/local/bin/cd-ejected.sh \
               /usr/local/bin/cd-setspeed.sh \
-              /usr/local/bin/audio-device-change.sh
+              /usr/local/bin/audio-device-change.sh \
+              /usr/local/bin/cdpcore-update
 sudo udevadm control --reload-rules
 ```
 
@@ -433,6 +443,7 @@ After this, the UI is reachable at `http://cdpcore.local:8000/` from any device 
 ```bash
 sudo cp /opt/cdpcore/system/cdpcore-backend.service   /etc/systemd/system/
 sudo cp /opt/cdpcore/system/cdpcore-extension.service /etc/systemd/system/
+sudo cp /opt/cdpcore/system/cdpcore-update.service    /etc/systemd/system/
 sudo systemctl daemon-reload
 sudo systemctl enable --now cdpcore-backend cdpcore-extension
 ```
@@ -572,6 +583,9 @@ CDPcore exposes a REST API and WebSocket interface, enabling integration with ex
 | GET | `/system/info` | System metrics JSON (CPU, memory, disk, network, services) - admin-gated |
 | GET | `/system/logs` | Last N lines of the backend service journal (`?n=150`) - admin-gated |
 | POST | `/system/action` | Execute system action (`restart_backend`, `restart_extension`, `restart_all`, `reboot`, `poweroff`, `roon_bridge_start`, `roon_bridge_stop`, `roon_bridge_restart`, `roon_bridge_enable`, `roon_bridge_disable`) - admin-gated |
+| GET | `/system/update/check` | Check the latest tagged GitHub Release - admin-gated |
+| GET | `/system/update/status` | Read updater phase from local appliance state - admin-gated |
+| POST | `/system/update/apply` | Resolve latest release server-side and start the updater one-shot - admin-gated |
 | GET | `/system/network`, `/system/roon`, `/system/admin` | Admin config pages (HTML shells - open; their data endpoints are gated) |
 | POST | `/system/network/*`, `/system/roon/*` | Network / Roon config writes - admin-gated |
 | POST | `/system/admin/set_pin` | Change the admin PIN - admin-gated |
@@ -645,10 +659,12 @@ cdpcore/
 |   |-- cd-ejected.sh              udev trigger script
 |   |-- cd-setspeed.sh             udev trigger script - forces drive to 1x
 |   |-- audio-device-change.sh     udev trigger script - notifies backend on DAC change
+|   |-- cdpcore-update             privileged release updater executor
 |   |-- cdpcore.avahi              avahi mDNS service (HTTP on port 8000)
 |   |-- cdpcore-sudoers            sudo rules for system management actions
 |   |-- cdpcore-backend.service    systemd unit (uvicorn, 0.0.0.0:8000)
-|   `-- cdpcore-extension.service  systemd unit (node app.js)
+|   |-- cdpcore-extension.service  systemd unit (node app.js)
+|   `-- cdpcore-update.service     one-shot updater unit
 |-- install.sh
 `-- README.md
 ```

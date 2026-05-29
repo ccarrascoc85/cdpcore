@@ -84,10 +84,12 @@ cp "$SCRIPT_DIR/system/cd-inserted.sh"          /usr/local/bin/
 cp "$SCRIPT_DIR/system/cd-ejected.sh"           /usr/local/bin/
 cp "$SCRIPT_DIR/system/cd-setspeed.sh"          /usr/local/bin/
 cp "$SCRIPT_DIR/system/audio-device-change.sh"  /usr/local/bin/
+cp "$SCRIPT_DIR/system/cdpcore-update"          /usr/local/bin/
 chmod +x /usr/local/bin/cd-inserted.sh \
          /usr/local/bin/cd-ejected.sh \
          /usr/local/bin/cd-setspeed.sh \
-         /usr/local/bin/audio-device-change.sh
+         /usr/local/bin/audio-device-change.sh \
+         /usr/local/bin/cdpcore-update
 udevadm control --reload-rules
 
 echo "==> Registering mDNS service (avahi)"
@@ -97,6 +99,7 @@ systemctl reload-or-restart avahi-daemon 2>/dev/null || true
 echo "==> Installing and enabling systemd services"
 cp "$SCRIPT_DIR/system/cdpcore-backend.service"   /etc/systemd/system/
 cp "$SCRIPT_DIR/system/cdpcore-extension.service" /etc/systemd/system/
+cp "$SCRIPT_DIR/system/cdpcore-update.service"    /etc/systemd/system/
 systemctl daemon-reload
 systemctl enable --now cdpcore-backend cdpcore-extension
 

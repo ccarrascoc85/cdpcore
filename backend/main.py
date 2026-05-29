@@ -14,6 +14,7 @@ import subprocess
 import threading
 import time
 
+import httpx
 from fastapi import FastAPI, HTTPException, BackgroundTasks, Request, WebSocket, WebSocketDisconnect
 from fastapi.responses import FileResponse, HTMLResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
@@ -44,6 +45,10 @@ def _read_version() -> str:
 
 
 __version__ = _read_version()
+_CACHE_DIR = Path(os.environ.get("CD_CACHE_DIR", "/var/cache/cd-player"))
+_UPDATE_REQUEST_FILE = _CACHE_DIR / "update_request.json"
+_UPDATE_STATUS_FILE = _CACHE_DIR / "update_status.json"
+_LATEST_RELEASE_URL = "https://api.github.com/repos/ccarrascoc85/cdpcore/releases/latest"
 
 app = FastAPI(title="CDPcore Backend", version=__version__)
 mimetypes.add_type("application/manifest+json", ".webmanifest")
@@ -1178,6 +1183,100 @@ def _run_deferred(cmd: list, delay: float = 0.6):
         time.sleep(delay)
         subprocess.run(cmd)
     threading.Thread(target=_go, daemon=True).start()
+
+
+def _normalize_version(v: str) -> str:
+    return str(v or "").strip().lstrip("v")
+
+
+def _version_key(v: str) -> tuple:
+    core = _normalize_version(v).split("-", 1)[0]
+    parts = []
+    for item in core.split("."):
+        try:
+            parts.append(int(item))
+        except ValueError:
+            parts.append(0)
+    while len(parts) < 3:
+        parts.append(0)
+    return tuple(parts[:3])
+
+
+def _update_available(current: str, latest: str) -> bool:
+    return _version_key(latest) > _version_key(current)
+
+
+def _latest_release() -> dict:
+    try:
+        with httpx.Client(timeout=6.0, headers={"User-Agent": "CDPcore"}) as client:
+            response = client.get(_LATEST_RELEASE_URL)
+            response.raise_for_status()
+            data = response.json()
+    except Exception as e:
+        logger.warning(f"update check failed: {e}")
+        return {
+            "current": __version__,
+            "latest": None,
+            "update_available": False,
+            "notes_url": None,
+            "published_at": None,
+            "reachable": False,
+        }
+
+    tag = str(data.get("tag_name") or "").strip()
+    return {
+        "current": __version__,
+        "latest": tag,
+        "update_available": bool(tag) and _update_available(__version__, tag),
+        "notes_url": data.get("html_url"),
+        "published_at": data.get("published_at"),
+        "reachable": True,
+    }
+
+
+def _read_update_status() -> dict:
+    try:
+        data = json.loads(_UPDATE_STATUS_FILE.read_text(encoding="utf-8"))
+        if not isinstance(data, dict):
+            return {"phase": "unknown"}
+        data.setdefault("phase", "unknown")
+        return data
+    except FileNotFoundError:
+        return {"phase": "idle"}
+    except Exception as e:
+        return {"phase": "unknown", "error": str(e)}
+
+
+def _write_update_json(path: Path, data: dict) -> None:
+    _CACHE_DIR.mkdir(parents=True, exist_ok=True)
+    tmp = path.with_suffix(path.suffix + ".tmp")
+    tmp.write_text(json.dumps(data, separators=(",", ":")) + "\n", encoding="utf-8")
+    tmp.replace(path)
+
+
+@app.get("/system/update/check")
+def system_update_check():
+    return _latest_release()
+
+
+@app.get("/system/update/status")
+def system_update_status():
+    return _read_update_status()
+
+
+@app.post("/system/update/apply")
+def system_update_apply():
+    release = _latest_release()
+    if not release.get("reachable"):
+        raise HTTPException(status_code=503, detail="update_check_unreachable")
+    if not release.get("update_available"):
+        raise HTTPException(status_code=409, detail="no_update_available")
+
+    tag = release.get("latest")
+    _write_update_json(_UPDATE_REQUEST_FILE, {"tag": tag})
+    _write_update_json(_UPDATE_STATUS_FILE, {"phase": "requested", "version": tag})
+    _run_deferred(["sudo", "systemctl", "start", "cdpcore-update"])
+    return {"ok": True, "started": True, "tag": tag}
 
 
 @app.post("/system/action")

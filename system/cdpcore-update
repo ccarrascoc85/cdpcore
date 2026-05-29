@@ -1,0 +1,152 @@
+#!/usr/bin/env bash
+# CDPcore self-update executor.
+# Runs as root from cdpcore-update.service, outside the backend sandbox.
+set -Eeuo pipefail
+
+CACHE_DIR="${CD_CACHE_DIR:-/var/cache/cd-player}"
+REQUEST_FILE="$CACHE_DIR/update_request.json"
+STATUS_FILE="$CACHE_DIR/update_status.json"
+INSTALL_DIR="/opt/cdpcore"
+SERVICE_USER="cdplayer"
+REPO_TARBALL_BASE="https://codeload.github.com/ccarrascoc85/cdpcore/tar.gz/refs/tags"
+
+TMP_DIR=""
+BACKUP_DIR="$CACHE_DIR/rollback"
+PREV_VERSION="unknown"
+RESTORE_READY=0
+
+json_status() {
+    local phase="$1"
+    shift || true
+    python3 - "$STATUS_FILE" "$phase" "$@" <<'PY'
+import json
+import sys
+import time
+from pathlib import Path
+
+path = Path(sys.argv[1])
+data = {"phase": sys.argv[2], "updated_at": int(time.time())}
+for item in sys.argv[3:]:
+    key, sep, value = item.partition("=")
+    if sep:
+        data[key] = value
+path.parent.mkdir(parents=True, exist_ok=True)
+tmp = path.with_suffix(path.suffix + ".tmp")
+tmp.write_text(json.dumps(data, separators=(",", ":")) + "\n", encoding="utf-8")
+tmp.replace(path)
+PY
+}
+
+read_tag() {
+    python3 - "$REQUEST_FILE" <<'PY'
+import json
+import sys
+from pathlib import Path
+
+data = json.loads(Path(sys.argv[1]).read_text(encoding="utf-8"))
+tag = str(data.get("tag") or "").strip()
+if not tag:
+    raise SystemExit("missing tag")
+print(tag)
+PY
+}
+
+restore_snapshot() {
+    if [[ "$RESTORE_READY" != "1" ]]; then
+        return 0
+    fi
+    if [[ -d "$BACKUP_DIR/backend" ]]; then
+        rsync -a --delete "$BACKUP_DIR/backend/" "$INSTALL_DIR/backend/"
+    fi
+    if [[ -d "$BACKUP_DIR/extension" ]]; then
+        rsync -a --delete "$BACKUP_DIR/extension/" "$INSTALL_DIR/extension/"
+    fi
+    chown -R "$SERVICE_USER:$SERVICE_USER" "$INSTALL_DIR"
+}
+
+fail_update() {
+    local message="$1"
+    restore_snapshot || true
+    json_status failed "error=$message" "reverted_to=$PREV_VERSION"
+    systemctl restart cdpcore-backend || true
+    exit 1
+}
+
+cleanup() {
+    if [[ -n "$TMP_DIR" ]]; then
+        rm -rf "$TMP_DIR"
+    fi
+    find "$CACHE_DIR" -maxdepth 1 -type d -name 'update.*' -mtime +1 -exec rm -rf {} + 2>/dev/null || true
+}
+trap cleanup EXIT
+trap 'fail_update "update failed"' ERR
+
+mkdir -p "$CACHE_DIR"
+
+if [[ ! -f "$REQUEST_FILE" ]]; then
+    fail_update "missing update request"
+fi
+
+TAG="$(read_tag)" || fail_update "invalid update request"
+if [[ ! "$TAG" =~ ^[A-Za-z0-9._-]+$ ]]; then
+    fail_update "invalid tag"
+fi
+
+if [[ -f "$INSTALL_DIR/backend/VERSION" ]]; then
+    PREV_VERSION="$(tr -d '[:space:]' < "$INSTALL_DIR/backend/VERSION")"
+fi
+
+TMP_DIR="$(mktemp -d "$CACHE_DIR/update.XXXXXX")"
+ARCHIVE="$TMP_DIR/source.tar.gz"
+EXTRACT_ROOT="$TMP_DIR/src"
+mkdir -p "$EXTRACT_ROOT"
+
+json_status downloading "version=$TAG"
+curl -fSL --proto '=https' --tlsv1.2 \
+    "$REPO_TARBALL_BASE/$TAG" \
+    -o "$ARCHIVE"
+
+json_status extracting "version=$TAG"
+tar -xzf "$ARCHIVE" -C "$EXTRACT_ROOT"
+SOURCE_DIR="$(find "$EXTRACT_ROOT" -mindepth 1 -maxdepth 1 -type d | head -n 1)"
+if [[ -z "$SOURCE_DIR" || ! -d "$SOURCE_DIR/backend" || ! -d "$SOURCE_DIR/extension" ]]; then
+    fail_update "invalid release archive"
+fi
+
+json_status snapshot "version=$TAG"
+rm -rf "$BACKUP_DIR"
+mkdir -p "$BACKUP_DIR"
+rsync -a --delete "$INSTALL_DIR/backend/" "$BACKUP_DIR/backend/"
+rsync -a --delete "$INSTALL_DIR/extension/" "$BACKUP_DIR/extension/"
+RESTORE_READY=1
+
+REQ_CHANGED=0
+NPM_CHANGED=0
+if ! cmp -s "$INSTALL_DIR/backend/requirements.txt" "$SOURCE_DIR/backend/requirements.txt"; then
+    REQ_CHANGED=1
+fi
+if ! cmp -s "$INSTALL_DIR/extension/package.json" "$SOURCE_DIR/extension/package.json"; then
+    NPM_CHANGED=1
+fi
+
+json_status installing "version=$TAG"
+rsync -a --delete "$SOURCE_DIR/backend/" "$INSTALL_DIR/backend/"
+rsync -a --delete "$SOURCE_DIR/extension/" "$INSTALL_DIR/extension/"
+
+if [[ "$REQ_CHANGED" == "1" ]]; then
+    json_status installing_python "version=$TAG"
+    sudo -u "$SERVICE_USER" "$INSTALL_DIR/venv/bin/pip" install -r "$INSTALL_DIR/backend/requirements.txt"
+fi
+
+if [[ "$NPM_CHANGED" == "1" ]]; then
+    json_status installing_node "version=$TAG"
+    sudo -u "$SERVICE_USER" npm ci --prefix "$INSTALL_DIR/extension" --no-fund --no-audit
+fi
+
+chown -R "$SERVICE_USER:$SERVICE_USER" "$INSTALL_DIR"
+RESTORE_READY=0
+
+json_status restarting "version=$TAG"
+systemctl restart cdpcore-extension
+json_status success "version=$TAG"
+systemctl restart cdpcore-backend

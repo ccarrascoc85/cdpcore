@@ -8,6 +8,7 @@
 #
 # References:
 #   - service control: backend/main.py /system/action handler
+#   - updater trigger: backend/main.py /system/update/apply handler
 #   - network actions: backend/network.py
 #   - hostname:        backend/network.py:set_hostname
 #
@@ -32,4 +33,5 @@ cdplayer ALL=(root) NOPASSWD: \
     /usr/bin/nmcli radio wifi off, \
     /usr/bin/nmcli device wifi rescan, \
     /usr/bin/nmcli device wifi connect *, \
-    /usr/bin/hostnamectl set-hostname *
+    /usr/bin/hostnamectl set-hostname *, \
+    /usr/bin/systemctl start cdpcore-update

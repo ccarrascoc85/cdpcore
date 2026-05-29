@@ -16,6 +16,12 @@ Deployed appliances track tagged releases, not the `main` branch HEAD.
 
 ## [Unreleased]
 
+### Added
+
+- Operator-initiated appliance updater on the system management page. Updates
+  are applied from the latest tagged GitHub Release through a decoupled
+  one-shot executor outside the backend sandbox.
+
 ## [1.0.1] - 2026-05-28
 
 ### Added

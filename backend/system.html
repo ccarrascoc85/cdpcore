@@ -237,6 +237,12 @@ body {
 }
 .btn-action:hover  { background: var(--seam-hi); color: var(--amber); }
 .btn-action:active { opacity: .5; }
+.btn-action:disabled {
+  opacity: .45;
+  cursor: default;
+  color: var(--txt-mid);
+}
+.btn-action:disabled:hover { background: var(--btn-face); color: var(--txt-mid); }
 .btn-action.full   { grid-column: 1 / -1; }
 .btn-action.danger { color: #d88a7a; border-color: #5a2820; }
 .btn-action.danger:hover { background: #2a1612; color: var(--red); }
@@ -441,6 +447,32 @@ html.light .card-title { background: #d0ccc4; }
       <div class="row">
         <span class="row-label">Session</span>
         <span class="row-value" id="val-admin-state">—</span>
+      </div>
+    </div>
+
+    <!-- Updates -->
+    <div class="card">
+      <div class="card-title">Updates</div>
+      <div class="row">
+        <span class="row-label">Current version</span>
+        <span class="row-value" id="upd-current">-</span>
+      </div>
+      <div class="row">
+        <span class="row-label">Latest release</span>
+        <span class="row-value" id="upd-latest">Not checked</span>
+      </div>
+      <div class="row">
+        <span class="row-label">Status</span>
+        <span class="row-value" id="upd-status">Idle</span>
+      </div>
+      <div class="row" id="upd-notes-row" style="display:none">
+        <span class="row-label">Release notes</span>
+        <a class="row-value" id="upd-notes" href="#" target="_blank" rel="noopener"
+           style="color:var(--amber);text-decoration:none">Open</a>
+      </div>
+      <div class="actions">
+        <button class="btn-action" id="btn-update-check" onclick="checkUpdates()">Check for updates</button>
+        <button class="btn-action" id="btn-update-apply" onclick="applyUpdate()" disabled>Update</button>
       </div>
     </div>
 
@@ -691,6 +723,149 @@ async function refresh() {
   } catch { /* keep last values */ }
 }
 
+/* Updates */
+let updateAvailable = false;
+let updatePolling = false;
+
+function setUpdateStatus(text, color = 'var(--txt-hi)') {
+  const el = document.getElementById('upd-status');
+  el.textContent = text;
+  el.style.color = color;
+}
+
+async function loadCurrentVersion() {
+  try {
+    const r = await fetch('/health');
+    if (!r.ok) return;
+    const d = await r.json();
+    document.getElementById('upd-current').textContent = d.version || '-';
+  } catch { /* keep last value */ }
+}
+
+async function checkUpdates(showToast = true) {
+  const checkBtn = document.getElementById('btn-update-check');
+  const applyBtn = document.getElementById('btn-update-apply');
+  checkBtn.disabled = true;
+  setUpdateStatus('Checking...', 'var(--amber)');
+  try {
+    const r = await fetch('/system/update/check');
+    if (!r.ok) throw new Error('check failed');
+    const d = await r.json();
+    document.getElementById('upd-current').textContent = d.current || '-';
+    document.getElementById('upd-latest').textContent = d.latest || '-';
+
+    const notesRow = document.getElementById('upd-notes-row');
+    const notes = document.getElementById('upd-notes');
+    if (d.notes_url) {
+      notes.href = d.notes_url;
+      notesRow.style.display = '';
+    } else {
+      notesRow.style.display = 'none';
+    }
+
+    updateAvailable = !!d.update_available;
+    applyBtn.disabled = !updateAvailable;
+    if (!d.reachable) {
+      setUpdateStatus('Offline - update check unavailable', 'var(--red)');
+    } else if (updateAvailable) {
+      setUpdateStatus('Update available', 'var(--amber)');
+    } else {
+      setUpdateStatus('Up to date', 'var(--green)');
+    }
+  } catch {
+    updateAvailable = false;
+    applyBtn.disabled = true;
+    setUpdateStatus('Update check failed', 'var(--red)');
+  } finally {
+    checkBtn.disabled = false;
+  }
+  if (showToast) toast('Update check complete', 2500);
+}
+
+function updatePhaseLabel(phase) {
+  const labels = {
+    idle: 'Idle',
+    requested: 'Requested',
+    downloading: 'Downloading',
+    extracting: 'Extracting',
+    snapshot: 'Creating rollback snapshot',
+    installing: 'Installing files',
+    installing_python: 'Installing Python dependencies',
+    installing_node: 'Installing Node dependencies',
+    restarting: 'Restarting services',
+    success: 'Updated',
+    failed: 'Failed',
+    unknown: 'Unknown',
+  };
+  return labels[phase] || phase || 'Unknown';
+}
+
+async function refreshUpdateStatus() {
+  try {
+    const r = await fetch('/system/update/status');
+    if (!r.ok) return null;
+    const d = await r.json();
+    const phase = d.phase || 'unknown';
+    const color = phase === 'failed' ? 'var(--red)' :
+                  phase === 'success' ? 'var(--green)' :
+                  phase === 'idle' ? 'var(--txt-hi)' : 'var(--amber)';
+    setUpdateStatus(updatePhaseLabel(phase), color);
+    if (d.version) document.getElementById('upd-latest').textContent = d.version;
+    return d;
+  } catch {
+    setUpdateStatus('Backend restarting...', 'var(--amber)');
+    return { phase: 'restarting' };
+  }
+}
+
+async function pollUpdateStatus() {
+  if (updatePolling) return;
+  updatePolling = true;
+  for (let i = 0; i < 90; i++) {
+    const d = await refreshUpdateStatus();
+    const phase = d && d.phase;
+    if (phase === 'success') {
+      updatePolling = false;
+      document.getElementById('btn-update-apply').disabled = true;
+      await loadCurrentVersion();
+      await checkUpdates(false);
+      toast('Update complete', 4000);
+      return;
+    }
+    if (phase === 'failed') {
+      updatePolling = false;
+      document.getElementById('btn-update-apply').disabled = !updateAvailable;
+      toast('Update failed - check logs', 5000);
+      return;
+    }
+    await new Promise(resolve => setTimeout(resolve, 2500));
+  }
+  updatePolling = false;
+}
+
+async function applyUpdate() {
+  if (!updateAvailable) return;
+  if (!confirm('Install the latest CDPcore release now?')) return;
+  document.getElementById('btn-update-apply').disabled = true;
+  setUpdateStatus('Requesting update...', 'var(--amber)');
+  try {
+    const r = await fetch('/system/update/apply', { method: 'POST' });
+    if (!r.ok) {
+      if (r.status === 409) setUpdateStatus('Up to date', 'var(--green)');
+      else setUpdateStatus('Update request failed', 'var(--red)');
+      document.getElementById('btn-update-apply').disabled = !updateAvailable;
+      return;
+    }
+    const d = await r.json();
+    if (d.tag) document.getElementById('upd-latest').textContent = d.tag;
+    toast('Update started', 3000);
+    pollUpdateStatus();
+  } catch {
+    setUpdateStatus('Update request failed', 'var(--red)');
+    document.getElementById('btn-update-apply').disabled = !updateAvailable;
+  }
+}
+
 /* ── Actions ─────────────────────────────────────────────── */
 const ACT_LABELS = {
   restart_backend:   'Restart backend service?',
@@ -773,6 +948,8 @@ function toggleLogs() {
 refresh();
 refreshAudio();
 refreshAdmin();
+loadCurrentVersion();
+refreshUpdateStatus();
 if (localStorage.getItem('cdp-logs-open') === '1') setLogsOpen(true);
 setInterval(refresh, 4000);
 setInterval(refreshAudio, 5000);

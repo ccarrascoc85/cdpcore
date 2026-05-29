@@ -1,0 +1,6 @@
+[Unit]
+Description=CDPcore self-update (one-shot, runs outside the backend sandbox)
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/bin/cdpcore-update
