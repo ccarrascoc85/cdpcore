@@ -16,6 +16,12 @@ Deployed appliances track tagged releases, not the `main` branch HEAD.
 
 ## [Unreleased]
 
+## [1.1.1] - 2026-05-28
+
+### Changed
+
+- Maintenance release validating the operator-initiated update path.
+
 ## [1.1.0] - 2026-05-28
 
 ### Added
