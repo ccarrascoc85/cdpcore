@@ -16,6 +16,8 @@ Deployed appliances track tagged releases, not the `main` branch HEAD.
 
 ## [Unreleased]
 
+## [1.1.0] - 2026-05-28
+
 ### Added
 
 - Operator-initiated appliance updater on the system management page. Updates
