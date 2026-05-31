@@ -16,6 +16,21 @@ Deployed appliances track tagged releases, not the `main` branch HEAD.
 
 ## [Unreleased]
 
+## [1.1.2] - 2026-05-31
+
+### Fixed
+
+- Updater no longer wipes the Node extension's `node_modules` when applying a
+  release whose `extension/package.json` is unchanged. The release tarball does
+  not ship `node_modules`, so the previous `rsync -a --delete` removed it and
+  the conditional `npm ci` did not re-create it. Snapshot, restore, and install
+  rsyncs now exclude `node_modules/`; `npm ci` still runs when `package.json`
+  changes.
+- Updater now waits for `cdpcore-extension` to reach `active` after restart; if
+  it does not, the update is treated as failed and rolled back. The failure
+  path now restarts both the extension and the backend so a failed update
+  leaves both services running on the previous code.
+
 ## [1.1.1] - 2026-05-28
 
 ### Changed

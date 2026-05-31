@@ -59,7 +59,7 @@ restore_snapshot() {
         rsync -a --delete "$BACKUP_DIR/backend/" "$INSTALL_DIR/backend/"
     fi
     if [[ -d "$BACKUP_DIR/extension" ]]; then
-        rsync -a --delete "$BACKUP_DIR/extension/" "$INSTALL_DIR/extension/"
+        rsync -a --delete --exclude 'node_modules/' "$BACKUP_DIR/extension/" "$INSTALL_DIR/extension/"
     fi
     chown -R "$SERVICE_USER:$SERVICE_USER" "$INSTALL_DIR"
 }
@@ -68,8 +68,21 @@ fail_update() {
     local message="$1"
     restore_snapshot || true
     json_status failed "error=$message" "reverted_to=$PREV_VERSION"
+    systemctl restart cdpcore-extension || true
     systemctl restart cdpcore-backend || true
     exit 1
+}
+
+wait_service_active() {
+    local service="$1"
+    local i
+    for i in $(seq 1 15); do
+        if systemctl is-active --quiet "$service"; then
+            return 0
+        fi
+        sleep 1
+    done
+    return 1
 }
 
 cleanup() {
@@ -117,7 +130,7 @@ json_status snapshot "version=$TAG"
 rm -rf "$BACKUP_DIR"
 mkdir -p "$BACKUP_DIR"
 rsync -a --delete "$INSTALL_DIR/backend/" "$BACKUP_DIR/backend/"
-rsync -a --delete "$INSTALL_DIR/extension/" "$BACKUP_DIR/extension/"
+rsync -a --delete --exclude 'node_modules/' "$INSTALL_DIR/extension/" "$BACKUP_DIR/extension/"
 RESTORE_READY=1
 
 REQ_CHANGED=0
@@ -131,7 +144,7 @@ fi
 
 json_status installing "version=$TAG"
 rsync -a --delete "$SOURCE_DIR/backend/" "$INSTALL_DIR/backend/"
-rsync -a --delete "$SOURCE_DIR/extension/" "$INSTALL_DIR/extension/"
+rsync -a --delete --exclude 'node_modules/' "$SOURCE_DIR/extension/" "$INSTALL_DIR/extension/"
 
 if [[ "$REQ_CHANGED" == "1" ]]; then
     json_status installing_python "version=$TAG"
@@ -148,5 +161,8 @@ RESTORE_READY=0
 
 json_status restarting "version=$TAG"
 systemctl restart cdpcore-extension
+if ! wait_service_active cdpcore-extension; then
+    fail_update "extension failed to start"
+fi
 json_status success "version=$TAG"
 systemctl restart cdpcore-backend
