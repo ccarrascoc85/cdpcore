@@ -16,6 +16,28 @@ Deployed appliances track tagged releases, not the `main` branch HEAD.
 
 ## [Unreleased]
 
+## [1.2.0] - 2026-06-01
+
+### Added
+
+- Updater self-updates its script, one-shot unit, and sudoers metadata from
+  release tarballs, with staged sudoers validation and rollback coverage.
+- `CDPCORE_RELEASE_REPO` override lets operators point release checks and
+  self-updates at an alternate `<owner>/<repo>` via systemd drop-ins.
+
+### Fixed
+
+- The post-restart extension health gate now actually rolls back on failure.
+  Previously `RESTORE_READY` was cleared before `wait_service_active` ran, so
+  the rollback path introduced in 1.1.2 silently no-op'd when the extension
+  failed to start after an update; it now arms rollback until the extension is
+  confirmed `active`.
+- The updater now consumes `update_request.json` immediately after reading the
+  target tag. Previously the request file persisted, so any subsequent
+  `systemctl start cdpcore-update` (operator debug or maintenance, or any
+  future trigger of the unit) would silently replay the last requested tag -
+  including downgrades, as observed during v1.2.0 smoke validation.
+
 ## [1.1.2] - 2026-05-31
 
 ### Fixed

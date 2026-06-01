@@ -234,6 +234,11 @@ Release source tarball, updates `/opt/cdpcore/backend` and
 `/opt/cdpcore/extension`, installs changed dependencies, and restarts CDPcore.
 Operator state lives outside `/opt/cdpcore` and is not overwritten by this flow.
 
+Release checks and self-updates use `ccarrascoc85/cdpcore` by default. Operators
+who maintain a fork can set `CDPCORE_RELEASE_REPO=<owner>/<repo>` with systemd
+drop-ins for both `cdpcore-backend.service` and `cdpcore-update.service`, then
+run `sudo systemctl daemon-reload` and restart the backend.
+
 > **Roon Bridge coexistence:** CDPcore is designed to run alongside Roon Bridge on the same appliance. The system pages manage the `roonbridge.service` unit and extension behavior; the Roon extension pauses the active zone when CD playback starts and can resume it when playback stops - both systems share the same USB DAC without conflict.
 
 ### Admin PIN gate

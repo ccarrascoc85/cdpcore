@@ -6,6 +6,7 @@ import asyncio
 import logging
 import mimetypes
 import os
+import re
 from pathlib import Path
 from typing import List, Optional
 
@@ -48,7 +49,21 @@ __version__ = _read_version()
 _CACHE_DIR = Path(os.environ.get("CD_CACHE_DIR", "/var/cache/cd-player"))
 _UPDATE_REQUEST_FILE = _CACHE_DIR / "update_request.json"
 _UPDATE_STATUS_FILE = _CACHE_DIR / "update_status.json"
-_LATEST_RELEASE_URL = "https://api.github.com/repos/ccarrascoc85/cdpcore/releases/latest"
+_DEFAULT_RELEASE_REPO = "ccarrascoc85/cdpcore"
+
+
+def _release_repo_from_env() -> str:
+    repo = os.environ.get("CDPCORE_RELEASE_REPO") or _DEFAULT_RELEASE_REPO
+    if "/" not in repo or not re.fullmatch(r"[A-Za-z0-9._/-]+", repo):
+        logging.getLogger("cd_player").warning(
+            f"Invalid CDPCORE_RELEASE_REPO={repo!r}; using {_DEFAULT_RELEASE_REPO}"
+        )
+        return _DEFAULT_RELEASE_REPO
+    return repo
+
+
+_RELEASE_REPO = _release_repo_from_env()
+_LATEST_RELEASE_URL = f"https://api.github.com/repos/{_RELEASE_REPO}/releases/latest"
 
 app = FastAPI(title="CDPcore Backend", version=__version__)
 mimetypes.add_type("application/manifest+json", ".webmanifest")

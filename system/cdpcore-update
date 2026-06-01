@@ -8,7 +8,9 @@ REQUEST_FILE="$CACHE_DIR/update_request.json"
 STATUS_FILE="$CACHE_DIR/update_status.json"
 INSTALL_DIR="/opt/cdpcore"
 SERVICE_USER="cdplayer"
-REPO_TARBALL_BASE="https://codeload.github.com/ccarrascoc85/cdpcore/tar.gz/refs/tags"
+DEFAULT_RELEASE_REPO="ccarrascoc85/cdpcore"
+RELEASE_REPO="${CDPCORE_RELEASE_REPO:-$DEFAULT_RELEASE_REPO}"
+REPO_TARBALL_BASE="https://codeload.github.com/${RELEASE_REPO}/tar.gz/refs/tags"
 
 TMP_DIR=""
 BACKUP_DIR="$CACHE_DIR/rollback"
@@ -61,6 +63,12 @@ restore_snapshot() {
     if [[ -d "$BACKUP_DIR/extension" ]]; then
         rsync -a --delete --exclude 'node_modules/' "$BACKUP_DIR/extension/" "$INSTALL_DIR/extension/"
     fi
+    if [[ -d "$BACKUP_DIR/metadata" ]]; then
+        install -m 0755 -o root -g root "$BACKUP_DIR/metadata/cdpcore-update" /usr/local/bin/cdpcore-update
+        install -m 0644 -o root -g root "$BACKUP_DIR/metadata/cdpcore-update.service" /etc/systemd/system/cdpcore-update.service
+        install -m 0440 -o root -g root "$BACKUP_DIR/metadata/cdpcore-sudoers" /etc/sudoers.d/cdpcore
+        systemctl daemon-reload
+    fi
     chown -R "$SERVICE_USER:$SERVICE_USER" "$INSTALL_DIR"
 }
 
@@ -96,11 +104,17 @@ trap 'fail_update "update failed"' ERR
 
 mkdir -p "$CACHE_DIR"
 
+if [[ ! "$RELEASE_REPO" =~ ^[A-Za-z0-9._/-]+$ || "$RELEASE_REPO" != */* ]]; then
+    json_status failed "error=invalid release repo" "reverted_to=$PREV_VERSION"
+    exit 1
+fi
+
 if [[ ! -f "$REQUEST_FILE" ]]; then
     fail_update "missing update request"
 fi
 
 TAG="$(read_tag)" || fail_update "invalid update request"
+rm -f "$REQUEST_FILE"
 if [[ ! "$TAG" =~ ^[A-Za-z0-9._-]+$ ]]; then
     fail_update "invalid tag"
 fi
@@ -126,9 +140,18 @@ if [[ -z "$SOURCE_DIR" || ! -d "$SOURCE_DIR/backend" || ! -d "$SOURCE_DIR/extens
     fail_update "invalid release archive"
 fi
 
+if ! visudo -cf "$SOURCE_DIR/system/cdpcore-sudoers" >/dev/null; then
+    json_status failed "error=sudoers validation failed" "reverted_to=$PREV_VERSION"
+    exit 1
+fi
+
 json_status snapshot "version=$TAG"
 rm -rf "$BACKUP_DIR"
 mkdir -p "$BACKUP_DIR"
+mkdir -p "$BACKUP_DIR/metadata"
+cp -a /usr/local/bin/cdpcore-update "$BACKUP_DIR/metadata/cdpcore-update"
+cp -a /etc/systemd/system/cdpcore-update.service "$BACKUP_DIR/metadata/cdpcore-update.service"
+cp -a /etc/sudoers.d/cdpcore "$BACKUP_DIR/metadata/cdpcore-sudoers"
 rsync -a --delete "$INSTALL_DIR/backend/" "$BACKUP_DIR/backend/"
 rsync -a --delete --exclude 'node_modules/' "$INSTALL_DIR/extension/" "$BACKUP_DIR/extension/"
 RESTORE_READY=1
@@ -146,6 +169,11 @@ json_status installing "version=$TAG"
 rsync -a --delete "$SOURCE_DIR/backend/" "$INSTALL_DIR/backend/"
 rsync -a --delete --exclude 'node_modules/' "$SOURCE_DIR/extension/" "$INSTALL_DIR/extension/"
 
+install -m 0755 -o root -g root "$SOURCE_DIR/system/cdpcore-update" /usr/local/bin/cdpcore-update
+install -m 0644 -o root -g root "$SOURCE_DIR/system/cdpcore-update.service" /etc/systemd/system/cdpcore-update.service
+install -m 0440 -o root -g root "$SOURCE_DIR/system/cdpcore-sudoers" /etc/sudoers.d/cdpcore
+systemctl daemon-reload
+
 if [[ "$REQ_CHANGED" == "1" ]]; then
     json_status installing_python "version=$TAG"
     sudo -u "$SERVICE_USER" "$INSTALL_DIR/venv/bin/pip" install -r "$INSTALL_DIR/backend/requirements.txt"
@@ -157,12 +185,12 @@ if [[ "$NPM_CHANGED" == "1" ]]; then
 fi
 
 chown -R "$SERVICE_USER:$SERVICE_USER" "$INSTALL_DIR"
-RESTORE_READY=0
 
 json_status restarting "version=$TAG"
 systemctl restart cdpcore-extension
 if ! wait_service_active cdpcore-extension; then
     fail_update "extension failed to start"
 fi
+RESTORE_READY=0
 json_status success "version=$TAG"
 systemctl restart cdpcore-backend

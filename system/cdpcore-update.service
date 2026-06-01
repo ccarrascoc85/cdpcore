@@ -3,4 +3,5 @@ Description=CDPcore self-update (one-shot, runs outside the backend sandbox)
 
 [Service]
 Type=oneshot
+Environment=CDPCORE_RELEASE_REPO=
 ExecStart=/usr/local/bin/cdpcore-update

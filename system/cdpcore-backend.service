@@ -15,6 +15,7 @@ Environment=VIRTUAL_ENV=/opt/cdpcore/venv
 Environment=PATH=/opt/cdpcore/venv/bin:/usr/local/bin:/usr/bin:/bin
 Environment=CDROM_DEVICE=/dev/cdrom
 Environment=CD_CACHE_DIR=/var/cache/cd-player
+Environment=CDPCORE_RELEASE_REPO=
 
 # Admin auth posture (see docs/agent_reasoning.md D-2).
 # "pin" = PIN-gated /system/* (community default).
