@@ -569,7 +569,7 @@ CDPcore exposes a REST API and WebSocket interface, enabling integration with ex
 | WS | `/ws` | WebSocket - server pushes state JSON on every change |
 | GET | `/status` | Current playback state (REST fallback) |
 | GET | `/tracks` | Track list for loaded disc |
-| POST | `/play` | Play from track 1 |
+| POST | `/play` | Resume if paused, otherwise play from track 1 |
 | POST | `/play/{n}` | Play track number n |
 | POST | `/pause` | Toggle pause/resume |
 | POST | `/stop` | Stop playback |

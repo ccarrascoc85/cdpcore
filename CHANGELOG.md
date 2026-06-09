@@ -16,6 +16,17 @@ Deployed appliances track tagged releases, not the `main` branch HEAD.
 
 ## [Unreleased]
 
+## [1.2.1] - 2026-06-09
+
+### Fixed
+
+- `POST /play` now resumes playback from the paused position instead of
+  restarting the current track from the beginning. Previously, pressing play
+  after a pause reset to track 1 at elapsed 0, discarding the paused position;
+  it now routes to the existing resume path when the state is `PAUSED`,
+  preserving track number and elapsed time. Playing from idle/stopped and
+  `POST /play/{n}` are unchanged.
+
 ## [1.2.0] - 2026-06-01
 
 ### Added

@@ -571,6 +571,12 @@ def play_from_start():
     if not ready:
         raise HTTPException(status_code=409, detail=reason)
     try:
+        if state.state == CDState.PAUSED:
+            player.resume()
+            state.state = CDState.PLAYING
+            _schedule_broadcast()
+            return {"ok": True}
+
         # Pre-spin: wake the drive motor before launching mpv so that
         # --cdda-speed=1 transitions from an already-spinning disc (fast)
         # rather than from a cold stop (can take 60+ s on some drives).

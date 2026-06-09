@@ -701,6 +701,10 @@ def pause_toggle():
         _player.pause()
 
 
+def resume():
+    _player.resume()
+
+
 def stop():
     _player.stop()
 
