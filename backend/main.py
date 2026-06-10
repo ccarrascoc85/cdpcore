@@ -3,12 +3,14 @@ CDPcore — FastAPI backend
 Exposes REST API on localhost:8000 for CD playback control.
 """
 import asyncio
+import concurrent.futures
 import logging
 import mimetypes
 import os
+import queue
 import re
 from pathlib import Path
-from typing import List, Optional
+from typing import Callable, List, Optional, TypeVar
 
 import json
 import subprocess
@@ -36,6 +38,61 @@ logging.basicConfig(
 )
 logging.getLogger("musicbrainzngs").setLevel(logging.WARNING)
 logger = logging.getLogger("cd_player")
+
+_T = TypeVar("_T")
+_DRIVE_UNKNOWN = object()
+_drive_timeout_last_log: dict[str, float] = {}
+_DRIVE_TIMEOUT_LOG_INTERVAL = 30.0
+_DISCID_EXECUTOR = concurrent.futures.ThreadPoolExecutor(
+    max_workers=2,
+    thread_name_prefix="discid",
+)
+_DISCID_READ_EXPIRY = 45.0
+
+
+def _log_drive_warning(key: str, message: str):
+    now = time.monotonic()
+    last = _drive_timeout_last_log.get(key, 0.0)
+    if now - last >= _DRIVE_TIMEOUT_LOG_INTERVAL:
+        _drive_timeout_last_log[key] = now
+        logger.warning(message)
+
+
+def _log_drive_timeout(label: str, timeout: float):
+    _log_drive_warning(
+        label,
+        f"{label} timed out after {timeout:.1f}s; drive presence unknown",
+    )
+
+
+async def _drive_call_async(loop: asyncio.AbstractEventLoop, label: str,
+                            fn: Callable[[], _T], timeout: float = 3.0):
+    try:
+        return await asyncio.wait_for(loop.run_in_executor(None, fn), timeout=timeout)
+    except asyncio.TimeoutError:
+        _log_drive_timeout(label, timeout)
+        return _DRIVE_UNKNOWN
+
+
+def _drive_call_sync(label: str, fn: Callable[[], _T], timeout: float = 3.0):
+    result: queue.Queue = queue.Queue(maxsize=1)
+
+    def _runner():
+        try:
+            result.put((True, fn()), block=False)
+        except Exception as e:
+            result.put((False, e), block=False)
+
+    thread = threading.Thread(target=_runner, daemon=True)
+    thread.start()
+    try:
+        ok, value = result.get(timeout=timeout)
+    except queue.Empty:
+        _log_drive_timeout(label, timeout)
+        return _DRIVE_UNKNOWN
+    if ok:
+        return value
+    raise value
 
 
 def _read_version() -> str:
@@ -324,6 +381,10 @@ async def _disc_monitor():
     await asyncio.sleep(2)          # let uvicorn finish binding
     loop = asyncio.get_running_loop()
     last_id: Optional[str] = None   # None = no disc / unknown
+    pending_read: Optional[asyncio.Future] = None
+    pending_read_started: Optional[float] = None
+    pending_read_timeout_logged = False
+    abandoned_disc_reads: set[asyncio.Future] = set()
 
     while True:
         try:
@@ -339,12 +400,17 @@ async def _disc_monitor():
             if player.drive_busy():
                 if last_id is not None:
                     try:
-                        present = await asyncio.wait_for(
-                            loop.run_in_executor(None, cd_reader.disc_media_present),
-                            timeout=2.0,
+                        present = await _drive_call_async(
+                            loop, "disc monitor media-present ioctl",
+                            cd_reader.disc_media_present, timeout=2.0,
                         )
-                    except asyncio.TimeoutError:
-                        present = True  # ioctl blocked; stall watchdog handles it
+                    except Exception as e:
+                        logger.debug(f"Disc media-present poll error: {e}")
+                        present = _DRIVE_UNKNOWN
+                    if present is _DRIVE_UNKNOWN:
+                        logger.debug("Disc media-present unknown; skipping monitor iteration")
+                        await asyncio.sleep(3)
+                        continue
                     if not present:
                         logger.info("Disc removed during playback (ioctl)")
                         # Reset state and broadcast before stopping mpv — player.stop()
@@ -363,12 +429,18 @@ async def _disc_monitor():
             # waiting for CDS_DISC_OK avoids unnecessary seeks and failed reads.
             if last_id is None:
                 try:
-                    drv = await asyncio.wait_for(
-                        loop.run_in_executor(None, cd_reader.raw_drive_status),
-                        timeout=2.0,
+                    drv = await _drive_call_async(
+                        loop, "disc monitor raw-drive-status ioctl",
+                        cd_reader.raw_drive_status, timeout=2.0,
                     )
                 except asyncio.TimeoutError:
-                    drv = 0
+                    drv = _DRIVE_UNKNOWN
+                except Exception as e:
+                    logger.debug(f"Drive status poll error: {e}")
+                    drv = _DRIVE_UNKNOWN
+                if drv is _DRIVE_UNKNOWN:
+                    await asyncio.sleep(3)
+                    continue
                 if drv == 3:        # CDS_DRIVE_NOT_READY — spinning up, no TOC read yet
                     await asyncio.sleep(2)
                     continue
@@ -377,11 +449,57 @@ async def _disc_monitor():
                     continue
                 # drv == 4 (CDS_DISC_OK) or 0 (unknown) → proceed to read_disc_id()
 
+            if pending_read is None:
+                if len(abandoned_disc_reads) >= 2:
+                    _log_drive_warning(
+                        "disc monitor two wedged reads",
+                        "two disc reads wedged; detection paused until drive resets",
+                    )
+                    await asyncio.sleep(3)
+                    continue
+                pending_read = loop.run_in_executor(_DISCID_EXECUTOR, cd_reader.read_disc_id)
+                pending_read_started = time.monotonic()
+                pending_read_timeout_logged = False
             try:
-                current_id: Optional[str] = await loop.run_in_executor(
-                    None, cd_reader.read_disc_id
+                current_id = await asyncio.wait_for(
+                    asyncio.shield(pending_read),
+                    timeout=5.0,
                 )
+                pending_read = None
+                pending_read_started = None
+                pending_read_timeout_logged = False
+            except asyncio.TimeoutError:
+                read_age = (
+                    time.monotonic() - pending_read_started
+                    if pending_read_started is not None else 0.0
+                )
+                if read_age > _DISCID_READ_EXPIRY:
+                    abandoned = pending_read
+                    abandoned_disc_reads.add(abandoned)
+                    abandoned.add_done_callback(abandoned_disc_reads.discard)
+                    pending_read = None
+                    pending_read_started = None
+                    pending_read_timeout_logged = False
+                    _log_drive_warning(
+                        "disc monitor abandon stuck read",
+                        "abandoning stuck disc read after 45s; drive may be wedged - will retry with a fresh read",
+                    )
+                    if len(abandoned_disc_reads) >= 2:
+                        _log_drive_warning(
+                            "disc monitor two wedged reads",
+                            "two disc reads wedged; detection paused until drive resets",
+                        )
+                    await asyncio.sleep(3)
+                    continue
+                if not pending_read_timeout_logged:
+                    _log_drive_timeout("disc monitor read_disc_id still in progress", 5.0)
+                    pending_read_timeout_logged = True
+                await asyncio.sleep(3)
+                continue
             except Exception as e:
+                pending_read = None
+                pending_read_started = None
+                pending_read_timeout_logged = False
                 logger.debug(f"Disc poll error: {e}")
                 current_id = None
 
@@ -391,7 +509,12 @@ async def _disc_monitor():
                 await loop.run_in_executor(None, _refresh_audio_devices, "disc_insert")
 
                 logger.info(f"Disc {'detected at startup' if last_id is None else 'swapped'}: {current_id}")
-                speed_ok = await loop.run_in_executor(None, cd_reader.set_drive_speed, 1)
+                speed_ok = await _drive_call_async(
+                    loop, "disc monitor set_drive_speed",
+                    lambda: cd_reader.set_drive_speed(1), timeout=3.0,
+                )
+                if speed_ok is _DRIVE_UNKNOWN:
+                    speed_ok = False
                 if speed_ok:
                     logger.info("Drive speed set to 1x (CDROM_SELECT_SPEED accepted)")
                 else:
@@ -440,10 +563,13 @@ def _on_disc_error():
     # and the user can press Play again without re-inserting.
     # If the disc is gone, do a full reset to IDLE.
     try:
-        still_present = cd_reader.disc_media_present()
+        still_present = _drive_call_sync(
+            "disc error media-present ioctl",
+            cd_reader.disc_media_present, timeout=2.0,
+        )
     except Exception:
         still_present = False
-    if still_present:
+    if still_present is True:
         logger.info("Disc read error — disc still present, returning to LOADED")
         state.state        = CDState.LOADED
         state.elapsed      = 0
@@ -451,7 +577,10 @@ def _on_disc_error():
         state.track_number = 0
         state.track_title  = None
     else:
-        logger.info("Disc error — disc removed, resetting to IDLE")
+        if still_present is _DRIVE_UNKNOWN:
+            logger.warning("Disc presence unknown after read error; resetting to IDLE")
+        else:
+            logger.info("Disc error — disc removed, resetting to IDLE")
         state.reset()
     _schedule_broadcast()
 
@@ -728,7 +857,20 @@ async def _load_disc_metadata():
     loop  = asyncio.get_running_loop()
 
     # Single disc read — returns disc_id, toc, and cddb_info in one pass
-    disc_id, toc, cddb_info = await loop.run_in_executor(None, cd_reader.read_disc_full)
+    try:
+        disc_full = await _drive_call_async(
+            loop, "disc metadata read_disc_full",
+            cd_reader.read_disc_full, timeout=30.0,
+        )
+    except Exception as e:
+        logger.error(f"Disc metadata read failed: {e}")
+        state.loading = False
+        return
+    if disc_full is _DRIVE_UNKNOWN:
+        logger.warning("Disc metadata read timed out; leaving state unchanged")
+        state.loading = False
+        return
+    disc_id, toc, cddb_info = disc_full
 
     if not disc_id:
         logger.error("Could not read disc ID; proceeding without metadata")

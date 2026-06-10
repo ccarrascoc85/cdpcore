@@ -384,6 +384,10 @@ class CDPlayer:
                         proc.kill()
                     except Exception:
                         pass
+                    try:
+                        proc.wait(timeout=2)
+                    except Exception:
+                        pass
 
         with self._lock:
             current_generation = self._mpv_generation
