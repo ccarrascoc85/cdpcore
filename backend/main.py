@@ -218,10 +218,11 @@ def _refresh_audio_devices(reason: str = "manual") -> dict:
 async def _audio_reconciliation_loop():
     """Slow background reconciliation: catches missed udev events and
     backend-restarts-with-DAC-already-connected scenarios."""
+    loop = asyncio.get_running_loop()
     while True:
         await asyncio.sleep(30)
         try:
-            _refresh_audio_devices("reconciliation")
+            await loop.run_in_executor(None, _refresh_audio_devices, "reconciliation")
         except Exception as e:
             logger.warning(f"[audio] reconciliation error: {e}")
 
@@ -290,7 +291,7 @@ async def websocket_endpoint(websocket: WebSocket):
 async def startup():
     global _event_loop
     _event_loop = asyncio.get_running_loop()
-    _refresh_audio_devices("startup")
+    await _event_loop.run_in_executor(None, _refresh_audio_devices, "startup")
 
     # Admin auth status (first-boot welcome handles setup; no auto-init)
     if auth.setup_required():
@@ -387,7 +388,7 @@ async def _disc_monitor():
             if current_id and current_id != last_id:
                 # New disc (or first detection at startup).
                 # Re-check audio devices: DAC may have been connected after startup.
-                _refresh_audio_devices("disc_insert")
+                await loop.run_in_executor(None, _refresh_audio_devices, "disc_insert")
 
                 logger.info(f"Disc {'detected at startup' if last_id is None else 'swapped'}: {current_id}")
                 speed_ok = await loop.run_in_executor(None, cd_reader.set_drive_speed, 1)
@@ -398,7 +399,7 @@ async def _disc_monitor():
                 if last_id is not None:
                     # Swap: stop any current playback before loading new disc
                     try:
-                        player.stop()
+                        await loop.run_in_executor(None, player.stop)
                     except Exception as e:
                         logger.warning(f"Stop before disc swap failed: {e}")
                 state.state = CDState.LOADED
@@ -412,7 +413,7 @@ async def _disc_monitor():
                 # Disc removed
                 logger.info("Disc removed")
                 try:
-                    player.stop()
+                    await loop.run_in_executor(None, player.stop)
                 except Exception as e:
                     logger.warning(f"Stop on disc removal failed: {e}")
                 state.reset()
@@ -711,8 +712,9 @@ async def cd_inserted(background_tasks: BackgroundTasks):
 async def cd_ejected():
     state = get_state()
     logger.info("CD ejection event received")
+    loop = asyncio.get_running_loop()
     try:
-        player.stop()
+        await loop.run_in_executor(None, player.stop)
     except Exception:
         pass
     state.reset()
@@ -858,12 +860,13 @@ async def audio_device_change(request: Request):
     action = body.get("action", "unknown")
     name   = body.get("name", "unknown")
     logger.info(f"[audio] udev event: action={action} name={name}")
-    snapshot = _refresh_audio_devices(f"udev_{action}")
+    loop = asyncio.get_running_loop()
+    snapshot = await loop.run_in_executor(None, _refresh_audio_devices, f"udev_{action}")
     if action == "add":
         async def _deferred_refresh(delay: float, reason: str):
             await asyncio.sleep(delay)
             try:
-                _refresh_audio_devices(reason)
+                await loop.run_in_executor(None, _refresh_audio_devices, reason)
             except Exception as e:
                 logger.warning(f"[audio] deferred refresh error: {e}")
 

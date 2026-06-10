@@ -42,7 +42,11 @@ def _aplay_device(hw_device: str) -> str:
 
 
 class CDPlayer:
-    """mpv-based real-time CD player with IPC control."""
+    """mpv-based real-time CD player with IPC control.
+
+    Locking rule: self._lock guards in-memory state fields only. Never hold it
+    across process, IPC, or drive I/O; teardown can wedge in kernel D-state.
+    """
 
     def __init__(self):
         self._mpv_proc:      Optional[subprocess.Popen] = None
@@ -54,12 +58,15 @@ class CDPlayer:
         self._track_elapsed: float = 0.0   # fallback timer
         self._track_start:   float = 0.0
         self._lock           = threading.Lock()
+        self._start_lock     = threading.Lock()
         self._on_track_end:  Optional[Callable[[int], None]] = None
         self._on_disc_error: Optional[Callable[[], None]]    = None
         # chapter-list start times (disc-absolute seconds) cached at mpv startup
         self._chapter_starts: list = []
         # True between play() call and first valid IPC time-pos (mpv spinning up)
         self._starting: bool = False
+        self._mpv_generation: int = 0
+        self._teardown_generations: set[int] = set()
 
     def set_on_track_end(self, callback: Callable[[int], None]):
         self._on_track_end = callback
@@ -75,18 +82,30 @@ class CDPlayer:
              cdrom_device: str = CDROM_DEVICE,
              alsa_device:  str = ALSA_DEVICE,
              seek_to_sec: float = 0.0):
-        with self._lock:
-            mpv_running = self._mpv_running()
+        with self._start_lock:
+            with self._lock:
+                mpv_running = self._mpv_running()
 
             if not mpv_running:
-                self._start_mpv(cdrom_device, alsa_device, total_tracks)
-                self._starting = True
+                proc = self._spawn_mpv(cdrom_device, alsa_device)
+                with self._lock:
+                    self._mpv_generation += 1
+                    generation = self._mpv_generation
+                    self._mpv_proc = proc
+                    self._starting = True
+                logger.info(f"mpv started (pid={proc.pid})")
+                threading.Thread(
+                    target=self._monitor_mpv,
+                    args=(generation,),
+                    daemon=True,
+                ).start()
 
-            self._current_track = track_number
-            self._total_tracks  = total_tracks
-            self._paused        = False
-            self._track_elapsed = 0.0
-            self._track_start   = time.monotonic()
+            with self._lock:
+                self._current_track = track_number
+                self._total_tracks  = total_tracks
+                self._paused        = False
+                self._track_elapsed = 0.0
+                self._track_start   = time.monotonic()
 
         if not mpv_running:
             # Wait for IPC socket, then wait until mpv has read the CDDA TOC
@@ -96,13 +115,19 @@ class CDPlayer:
             while time.monotonic() < deadline:
                 if self._ipc_query("chapter") is not None:
                     break
-                if not self._mpv_running():
+                if self.is_stopped():
                     return  # stop() was called while waiting — abort
                 time.sleep(0.5)
             if track_number > 1:
                 self._ipc_send(["set_property", "chapter", track_number - 1])
-            threading.Thread(target=self._cache_chapter_list_bg, daemon=True).start()
+            threading.Thread(
+                target=self._cache_chapter_list_bg,
+                args=(generation,),
+                daemon=True,
+            ).start()
             self._ipc_send(["set_property", "pause", False])
+            with self._lock:
+                self._starting = False
             logger.info(f"Playing track {track_number}/{total_tracks}")
             return
 
@@ -142,11 +167,8 @@ class CDPlayer:
         logger.info("Resumed")
 
     def stop(self):
-        with self._lock:
+        with self._start_lock:
             self._stop_mpv()
-            self._current_track = 0
-            self._paused        = False
-            self._track_elapsed = 0.0
         logger.info("Stopped")
 
     # ------------------------------------------------------------------
@@ -211,14 +233,21 @@ class CDPlayer:
             return self._track_elapsed + (time.monotonic() - self._track_start)
 
     def current_track(self) -> int:
-        return self._current_track
+        with self._lock:
+            return self._current_track
 
     def get_status(self) -> dict:
-        elapsed = self.get_elapsed()
         with self._lock:
-            running = self._mpv_running()
+            running = self._mpv_proc is not None
             paused  = self._paused
             song    = max(0, self._current_track - 1)
+            buffering = self._starting
+            if paused:
+                elapsed = self._track_elapsed
+            elif running:
+                elapsed = self._track_elapsed + (time.monotonic() - self._track_start)
+            else:
+                elapsed = 0.0
 
         if paused:
             state = "pause"
@@ -232,7 +261,7 @@ class CDPlayer:
             "elapsed":   str(elapsed),
             "song":      str(song),
             "duration":  "0",
-            "buffering": self._starting,
+            "buffering": buffering,
         }
 
     # ------------------------------------------------------------------
@@ -243,8 +272,12 @@ class CDPlayer:
         """True if mpv process is alive. Must hold self._lock."""
         return self._mpv_proc is not None and self._mpv_proc.poll() is None
 
-    def _start_mpv(self, cdrom_device: str, alsa_device: str, total_tracks: int):
-        """Start mpv process. Must hold self._lock."""
+    @staticmethod
+    def _proc_running(proc: Optional[subprocess.Popen]) -> bool:
+        return proc is not None and proc.poll() is None
+
+    def _spawn_mpv(self, cdrom_device: str, alsa_device: str) -> subprocess.Popen:
+        """Start mpv process without holding self._lock."""
         try:
             _IPC_SOCK.unlink(missing_ok=True)
         except Exception:
@@ -261,39 +294,85 @@ class CDPlayer:
             "--demuxer-max-bytes=512KiB",
             f"cdda://{cdrom_device}",
         ]
-        self._mpv_proc = subprocess.Popen(
+        return subprocess.Popen(
             cmd,
             stdout=subprocess.DEVNULL,
             stderr=subprocess.DEVNULL,
         )
-        logger.info(f"mpv started (pid={self._mpv_proc.pid})")
 
-        # Start monitor thread
+    def _stop_mpv(self):
+        """Detach mpv state quickly and tear the process down in the background."""
+        proc, generation, ipc_sock = self._detach_mpv_for_teardown()
+        if proc is None:
+            return
         threading.Thread(
-            target=self._monitor_mpv,
+            target=self._teardown_mpv_bg,
+            args=(proc, generation, ipc_sock),
             daemon=True,
         ).start()
 
-    def _stop_mpv(self):
-        """Terminate mpv. Must hold self._lock."""
-        # 1. Ask mpv to quit gracefully via IPC — lets it close the CDROM device
-        #    cleanly, avoiding a D-state hang on CDDA reads.
-        self._ipc_send(["quit"])
-        time.sleep(0.3)
-        self._close_ipc()
+    def _detach_mpv_for_teardown(self):
+        with self._lock:
+            proc = self._mpv_proc
+            generation = self._mpv_generation
 
-        proc = self._mpv_proc
-        if proc and proc.poll() is None:
+            self._mpv_proc = None
+            self._current_track = 0
+            self._paused = False
+            self._track_elapsed = 0.0
+            self._track_start = 0.0
+            self._chapter_starts = []
+            self._starting = False
+
+            if proc is None or generation in self._teardown_generations:
+                return None, generation, None
+            self._teardown_generations.add(generation)
+
+        with self._ipc_lock:
+            ipc_sock = self._ipc_sock
+            self._ipc_sock = None
+        return proc, generation, ipc_sock
+
+    def _teardown_mpv_bg(self, proc: subprocess.Popen, generation: int,
+                         ipc_sock: Optional[socket.socket]):
+        try:
+            self._teardown_mpv_slow(proc, generation, ipc_sock)
+        finally:
+            with self._lock:
+                self._teardown_generations.discard(generation)
+
+    def _send_quit_to_socket(self, ipc_sock: Optional[socket.socket]):
+        if ipc_sock is None:
+            return
+        try:
+            msg = json.dumps({"command": ["quit"]}) + "\n"
+            ipc_sock.sendall(msg.encode())
+        except Exception:
+            pass
+
+    def _teardown_mpv_slow(self, proc: subprocess.Popen, generation: int,
+                           ipc_sock: Optional[socket.socket]):
+        # Use only the captured IPC socket. Reconnecting through the shared
+        # socket path could signal a newer mpv if this teardown is stale.
+        self._send_quit_to_socket(ipc_sock)
+        time.sleep(0.3)
+        if ipc_sock:
             try:
-                proc.wait(timeout=1)          # fast path: quit already exited mpv
+                ipc_sock.close()
+            except Exception:
+                pass
+
+        if self._proc_running(proc):
+            try:
+                proc.wait(timeout=1)
             except subprocess.TimeoutExpired:
                 try:
                     proc.terminate()
                     proc.wait(timeout=2)
                 except subprocess.TimeoutExpired:
-                    # mpv is stuck in D state (blocked on CDDA I/O).
-                    # Disabling the drive door lock interrupts the pending I/O
-                    # and unblocks the process so SIGKILL can take effect.
+                    # A D-state drive wedge cannot be killed from userspace.
+                    # This mitigation can wedge too, so it only runs in a
+                    # daemon thread that request paths and monitors never join.
                     try:
                         subprocess.run(
                             ["eject", "-i", "off", CDROM_DEVICE],
@@ -306,9 +385,11 @@ class CDPlayer:
                     except Exception:
                         pass
 
-        self._mpv_proc = None
-        self._chapter_starts = []
-        self._starting = False
+        with self._lock:
+            current_generation = self._mpv_generation
+            current_proc = self._mpv_proc
+        if current_generation != generation or current_proc is not None:
+            return
         try:
             _IPC_SOCK.unlink(missing_ok=True)
         except Exception:
@@ -420,7 +501,7 @@ class CDPlayer:
                     pass
         return None
 
-    def _cache_chapter_list_bg(self):
+    def _cache_chapter_list_bg(self, generation: int):
         """Background thread: fetch chapter-list once mpv has read the CDDA TOC.
 
         mpv creates the IPC socket before CDDA is fully demuxed, so
@@ -430,13 +511,17 @@ class CDPlayer:
         for attempt in range(10):
             time.sleep(1.0)
             with self._lock:
-                if not self._mpv_running():
+                if generation != self._mpv_generation or not self._mpv_running():
                     return
                 if self._chapter_starts:
                     return
             chapter_list = self._ipc_query("chapter-list", timeout=2.0)
             if chapter_list and isinstance(chapter_list, list) and len(chapter_list) > 0:
-                self._chapter_starts = [float(c.get("time", 0)) for c in chapter_list]
+                starts = [float(c.get("time", 0)) for c in chapter_list]
+                with self._lock:
+                    if generation != self._mpv_generation:
+                        return
+                    self._chapter_starts = starts
                 logger.info(
                     f"Cached {len(self._chapter_starts)} chapter starts "
                     f"(attempt {attempt + 1}): {[round(t, 2) for t in self._chapter_starts[:4]]}…"
@@ -461,7 +546,7 @@ class CDPlayer:
     # Internal: monitor thread
     # ------------------------------------------------------------------
 
-    def _monitor_mpv(self):
+    def _monitor_mpv(self, generation: int):
         """
         Watch mpv events via IPC:
         - chapter-change → update _current_track, fire on_track_end for prev
@@ -505,7 +590,7 @@ class CDPlayer:
 
         while True:
             with self._lock:
-                if not self._mpv_running():
+                if generation != self._mpv_generation or not self._mpv_running():
                     break
             try:
                 chunk = s.recv(4096)
@@ -643,7 +728,11 @@ class CDPlayer:
         # processed), fire _on_disc_error so the UI doesn't stay frozen.
         should_error = False
         with self._lock:
-            if self._mpv_proc and self._mpv_proc.poll() is not None:
+            if (
+                generation == self._mpv_generation
+                and self._mpv_proc
+                and self._mpv_proc.poll() is not None
+            ):
                 self._mpv_proc = None
                 self._current_track = 0
                 should_error = not end_handled
@@ -761,5 +850,3 @@ def eject():
 
 def get_player_status() -> dict:
     return _player.get_status()
-
-
