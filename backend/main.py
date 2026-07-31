@@ -291,16 +291,27 @@ _ws_clients: set = set()
 
 
 async def _broadcast(data: dict):
-    """Send a state snapshot to all connected WebSocket clients."""
+    """Send a state snapshot to all connected WebSocket clients.
+
+    Sends concurrently with a per-client timeout: a half-open client (TCP alive
+    but peer not reading) must never block the caller. Without the timeout, a
+    stale browser tab could stall a send for the full TCP timeout (~15 s),
+    freezing whatever awaited the broadcast — e.g. the disc monitor right after
+    a detection, which then could not poll for removal. Slow/dead clients are
+    reaped so subsequent broadcasts stay fast.
+    """
     if not _ws_clients:
         return
     msg = json.dumps(data)
     dead = set()
-    for ws in _ws_clients:
+
+    async def _send(ws):
         try:
-            await ws.send_text(msg)
+            await asyncio.wait_for(ws.send_text(msg), timeout=1.5)
         except Exception:
             dead.add(ws)
+
+    await asyncio.gather(*(_send(ws) for ws in list(_ws_clients)))
     _ws_clients.difference_update(dead)  # in-place — avoids UnboundLocalError from -= reassignment
 
 
@@ -373,10 +384,14 @@ async def _disc_monitor():
     """
     Background task: polls the optical drive to detect disc changes.
 
-    Handles three cases without relying on udev:
+    Handles three cases:
       - Service started with disc already in drive  (startup detection)
       - Disc ejected while service is running       (reset state)
       - New disc inserted / disc swapped            (load new metadata)
+
+    Udev media-change events are the primary insert/eject signal. This loop is
+    the fallback for missed events, startup detection, and state reconciliation.
+    Keep both paths idempotent: udev may load metadata before this loop polls.
     """
     await asyncio.sleep(2)          # let uvicorn finish binding
     loop = asyncio.get_running_loop()
@@ -390,6 +405,13 @@ async def _disc_monitor():
         try:
             state = get_state()
 
+            # Resync: a disc-error (stall watchdog), /eject, or /cd/ejected can
+            # reset the state to IDLE without this loop knowing. Clear last_id so
+            # a reinserted disc is re-detected via read_disc_id, instead of
+            # polling presence on a phantom disc forever.
+            if last_id is not None and state.state == CDState.IDLE:
+                last_id = None
+
             if state.loading:
                 await asyncio.sleep(3)
                 continue
@@ -397,30 +419,48 @@ async def _disc_monitor():
             # When mpv holds the drive, discid.read() would compete with audio
             # reads.  Use CDROM_DRIVE_STATUS ioctl instead — no data read,
             # safe during playback — to detect disc removal while drive is busy.
-            if player.drive_busy():
-                if last_id is not None:
-                    try:
-                        present = await _drive_call_async(
-                            loop, "disc monitor media-present ioctl",
-                            cd_reader.disc_media_present, timeout=2.0,
-                        )
-                    except Exception as e:
-                        logger.debug(f"Disc media-present poll error: {e}")
-                        present = _DRIVE_UNKNOWN
-                    if present is _DRIVE_UNKNOWN:
-                        logger.debug("Disc media-present unknown; skipping monitor iteration")
-                        await asyncio.sleep(3)
-                        continue
-                    if not present:
-                        logger.info("Disc removed during playback (ioctl)")
-                        # Reset state and broadcast before stopping mpv — player.stop()
-                        # blocks up to 3 s waiting for the process; doing it in an
-                        # executor keeps the event loop (and WS broadcast) responsive.
-                        get_state().reset()
-                        last_id = None
-                        await _broadcast_state()
+            # Fast removal detection whenever a disc is known — works while
+            # playing (drive_busy) AND while stopped. Uses the lightweight
+            # CDROM_DRIVE_STATUS ioctl, not a TOC read, so going to IDLE is
+            # immediate in both states. read_disc_id below only runs to identify
+            # a newly inserted disc (last_id is None).
+            if last_id is not None:
+                try:
+                    present = await _drive_call_async(
+                        loop, "disc monitor media-present ioctl",
+                        # 1s, not 2s: a settled drive answers in <50ms; the only
+                        # time this blocks is while the eject mechanism is moving,
+                        # and a shorter timeout catches "absent" sooner once it
+                        # settles (cuts the worst-case eject->IDLE latency).
+                        cd_reader.disc_media_present, timeout=1.0,
+                    )
+                except Exception as e:
+                    logger.debug(f"Disc media-present poll error: {e}")
+                    present = _DRIVE_UNKNOWN
+                if present is _DRIVE_UNKNOWN:
+                    # Transient during a physical eject (drive settling) — retry
+                    # quickly so removal is caught as soon as it resolves, rather
+                    # than stalling the transition to IDLE for a few seconds.
+                    logger.debug("Disc media-present unknown; retrying soon")
+                    await asyncio.sleep(0.5)
+                    continue
+                if not present:
+                    logger.info("Disc removed (ioctl)")
+                    # Reset state and broadcast before stopping mpv — player.stop()
+                    # blocks up to 3 s waiting for the process; doing it in an
+                    # executor keeps the event loop (and WS broadcast) responsive.
+                    get_state().reset()
+                    last_id = None
+                    await _broadcast_state()
+                    if player.drive_busy():
                         await loop.run_in_executor(None, player.stop)
-                await asyncio.sleep(3)
+                    await asyncio.sleep(1)
+                    continue
+                # Disc still present: no TOC re-read needed. Poll fast (500 ms)
+                # when stopped (the ioctl is the only removal signal then) so an
+                # eject reaches IDLE near the drive's physical settling floor;
+                # slower when playing, where mpv events also catch removal.
+                await asyncio.sleep(0.5 if not player.drive_busy() else 3)
                 continue
 
             # Gate: when no disc is currently known, check drive readiness via
@@ -531,6 +571,12 @@ async def _disc_monitor():
                 state.loading = False
                 last_id = current_id
                 await _broadcast_state()
+                # Hand straight to the fast media-present poll at the top of the
+                # loop instead of falling through to the slow bottom sleep. Without
+                # this, a disc removed the instant it's recognized isn't noticed
+                # until the next iteration, adding up to 15 s before reaching IDLE.
+                # The top-of-loop branch self-paces (0.5 s stopped / 3 s playing).
+                continue
 
             elif not current_id and last_id is not None:
                 # Disc removed
@@ -546,9 +592,11 @@ async def _disc_monitor():
         except Exception as e:
             logger.error(f"Disc monitor unexpected error: {e}")
 
-        # Disc confirmed → slow poll (avoid unnecessary TOC seeks).
-        # No disc → 5 s (ioctl gate above handles the NOT_READY fast-path).
-        await asyncio.sleep(5 if last_id is None else 15)
+        # Reached only with no disc known: a loaded disc always hands off to the
+        # media-present branch above (which self-paces and continues), so control
+        # never falls through here while last_id is set. 5 s idle poll; the ioctl
+        # gate above handles the NOT_READY / spinning-up fast-path.
+        await asyncio.sleep(5)
 
 
 def _on_disc_error():
@@ -697,6 +745,11 @@ def play_from_start():
     state = get_state()
     if state.state == CDState.IDLE:
         raise HTTPException(status_code=409, detail="No disc loaded")
+    # Re-enumerate devices now: a DAC unplugged since the last periodic refresh
+    # would otherwise leave a stale audio_state, letting the gate pass and mpv
+    # fail silently on a vanished device. This also broadcasts the fresh state
+    # so the UI shows "NO DAC" instead of appearing to do nothing.
+    _refresh_audio_devices("play")
     ready, reason = _playback_device_ready()
     if not ready:
         raise HTTPException(status_code=409, detail=reason)
@@ -736,6 +789,9 @@ def play_track(track_number: int):
         raise HTTPException(status_code=409, detail="No disc loaded")
     if state.tracks and not (1 <= track_number <= len(state.tracks)):
         raise HTTPException(status_code=400, detail=f"Track {track_number} out of range")
+    # Re-enumerate devices now (see /play): avoids a stale audio_state letting a
+    # vanished DAC through, and broadcasts so the UI can surface "NO DAC".
+    _refresh_audio_devices("play")
     ready, reason = _playback_device_ready()
     if not ready:
         raise HTTPException(status_code=409, detail=reason)

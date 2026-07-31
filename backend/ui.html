@@ -961,6 +961,7 @@ let state      = {};
 let tracks     = [];
 let coverUrl    = null;
 let coverLoaded = false;
+let _coverToken = 0;        // invalidates in-flight cover loads on any change
 let tlOpen     = true;   // expanded by default
 
 /* ── Elapsed interpolation ───────────────────────────────── */
@@ -1001,13 +1002,23 @@ function updateCover(url) {
   coverUrl = url;
   const img = document.getElementById('cover');
   const ph  = document.getElementById('cover-ph');
+  // Invalidate any in-flight load so a late onload/onerror cannot re-apply a
+  // stale cover after the state has moved on.
+  const token = ++_coverToken;
   if (!url) {
-    img.classList.remove('loaded'); img.src = ''; ph.style.display = '';
-    coverLoaded = false; return;
+    // Clear deterministically to a transparent 1x1 pixel. This avoids the
+    // empty-string quirk (browser loads the page itself as the image -> broken
+    // flash) and guarantees no broken-image render. Drop the handlers so a
+    // pending load cannot fire late.
+    img.onload = null; img.onerror = null;
+    img.classList.remove('loaded');
+    img.src = 'data:image/gif;base64,R0lGODlhAQABAIAAAAAAAP///yH5BAEAAAAALAAAAAABAAEAAAIBRAA7';
+    ph.style.display = ''; coverLoaded = false;
+    return;
   }
   img.classList.remove('loaded');
-  img.onload  = () => { img.classList.add('loaded'); ph.style.display = 'none'; coverLoaded = true; };
-  img.onerror = () => { ph.style.display = ''; coverLoaded = false; };
+  img.onload  = () => { if (token !== _coverToken) return; img.classList.add('loaded'); ph.style.display = 'none'; coverLoaded = true; };
+  img.onerror = () => { if (token !== _coverToken) return; ph.style.display = ''; coverLoaded = false; };
   img.src = url + '?t=' + Date.now();
 }
 
@@ -1062,9 +1073,14 @@ function updateVfd(s) {
   pulse.className = 'vfd-pulse' + (playing ? ' playing' : paused ? ' paused' : '');
 
   const labels = { idle:'NO DISC', loaded:'READY', playing:'PLAYING', paused:'PAUSE' };
+  // No usable USB DAC → playback is blocked by the backend gate. Surface it on
+  // the status line so a loaded disc that won't start has a visible reason
+  // ("NO DAC") instead of appearing to do nothing when play is pressed.
+  const noDac = (s.audio_state === 'no_usb' || s.audio_state === 'device_missing');
   document.getElementById('vfd-label').textContent =
     s.loading    ? 'READING'  :
     s.buffering  ? 'STARTING' :
+    (noDac && s.state === 'loaded') ? 'NO DAC' :
     (labels[s.state] || s.state.toUpperCase());
   if (s.loading || s.buffering) pulse.className = 'vfd-pulse playing';
 
@@ -1109,7 +1125,7 @@ async function applyState(s) {
     const pct      = duration > 0 ? Math.min(100, elapsed / duration * 100) : 0;
 
     /* Elapsed interpolation — anchor to server value on every update */
-    if (playing) {
+    if (playing && !s.buffering) {
       _elapsedBase  = elapsed;
       _elapsedBaseTs = performance.now();
       _startTick();
@@ -1191,7 +1207,7 @@ async function poll() {
 function _startTick() {
   if (_tickTimer !== null) return;
   function tick() {
-    if (state.state !== 'playing') { _tickTimer = null; return; }
+    if (state.state !== 'playing' || state.buffering) { _tickTimer = null; return; }
     const dt  = (performance.now() - _elapsedBaseTs) / 1000;
     const dur = parseFloat(state.duration) || 0;
     const el  = dur > 0 ? Math.min(_elapsedBase + dt, dur) : _elapsedBase + dt;

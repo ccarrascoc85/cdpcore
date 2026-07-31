@@ -55,6 +55,12 @@ class CDPlayer:
         self._current_track: int   = 0
         self._total_tracks:  int   = 0
         self._paused:        bool  = False
+        self._timer_paused:  bool  = False
+        self._seek_timer_pending: bool = False
+        self._seek_sync_pos: Optional[float] = None
+        self._seek_pending_deadline: float = 0.0   # free-run if anchor never arrives
+        self._cold_anchor: bool = False   # cold start: anchor to first real time-pos
+        self._resync_suppressed_until: float = 0.0
         self._track_elapsed: float = 0.0   # fallback timer
         self._track_start:   float = 0.0
         self._lock           = threading.Lock()
@@ -104,6 +110,10 @@ class CDPlayer:
                 self._current_track = track_number
                 self._total_tracks  = total_tracks
                 self._paused        = False
+                self._timer_paused  = False
+                self._seek_timer_pending = False
+                self._seek_sync_pos = None
+                self._resync_suppressed_until = 0.0
                 self._track_elapsed = 0.0
                 self._track_start   = time.monotonic()
 
@@ -127,6 +137,19 @@ class CDPlayer:
             ).start()
             self._ipc_send(["set_property", "pause", False])
             with self._lock:
+                # Hold elapsed at 0 until mpv's real time-pos starts advancing,
+                # then anchor to it — so the counter begins exactly with the audio
+                # instead of from the unpause moment, which can lead the audio by
+                # ~1 s on a slow drive and cause a one-time catch-up skip.
+                now = time.monotonic()
+                self._track_elapsed = 0.0
+                self._track_start = now
+                self._timer_paused = True
+                self._seek_timer_pending = True
+                self._seek_sync_pos = None
+                self._seek_pending_deadline = now + 5.0
+                self._resync_suppressed_until = 0.0
+                self._cold_anchor = True
                 self._starting = False
             logger.info(f"Playing track {track_number}/{total_tracks}")
             return
@@ -135,6 +158,15 @@ class CDPlayer:
         # set_property chapter N is a no-op when already on chapter N
         # (e.g. restarting the current track), so an explicit seek is needed then.
         current_chapter = self._ipc_query("chapter")
+        if current_chapter is not None and current_chapter != track_number - 1:
+            with self._lock:
+                self._track_elapsed = 0.0
+                self._track_start = time.monotonic()
+                self._timer_paused = True
+                self._seek_timer_pending = True
+                self._seek_sync_pos = None
+                self._cold_anchor = False
+                self._resync_suppressed_until = time.monotonic() + 8.0
         self._ipc_send(["set_property", "chapter", track_number - 1])
         if current_chapter == track_number - 1:
             # Same-chapter restart: use the cached TOC start time + 150 ms clearance
@@ -145,6 +177,14 @@ class CDPlayer:
             else:
                 start_time = seek_to_sec + 1.0
             self._ipc_send(["seek", start_time, "absolute"])
+            with self._lock:
+                self._track_elapsed = 0.0
+                self._track_start = time.monotonic()
+                self._timer_paused = True
+                self._seek_timer_pending = True
+                self._seek_sync_pos = None
+                self._cold_anchor = False
+                self._resync_suppressed_until = time.monotonic() + 8.0
         self._ipc_send(["set_property", "pause", False])
         logger.info(f"Playing track {track_number}/{total_tracks}")
 
@@ -152,7 +192,10 @@ class CDPlayer:
         with self._lock:
             if self._paused or not self._mpv_running():
                 return
-            self._track_elapsed = self._track_elapsed + (time.monotonic() - self._track_start)
+            now = time.monotonic()
+            if not self._timer_paused:
+                self._track_elapsed = self._track_elapsed + (now - self._track_start)
+                self._timer_paused = True
             self._paused = True
         self._ipc_send(["set_property", "pause", True])
         logger.info("Paused")
@@ -162,6 +205,7 @@ class CDPlayer:
             if not self._paused or not self._mpv_running():
                 return
             self._track_start = time.monotonic()
+            self._timer_paused = False
             self._paused = False
         self._ipc_send(["set_property", "pause", False])
         logger.info("Resumed")
@@ -228,7 +272,9 @@ class CDPlayer:
     def _get_timer_elapsed(self) -> float:
         """Track-relative elapsed time from monotonic timer (no IPC)."""
         with self._lock:
-            if self._paused:
+            if self._starting:
+                return 0.0
+            if self._timer_paused:
                 return self._track_elapsed
             return self._track_elapsed + (time.monotonic() - self._track_start)
 
@@ -241,8 +287,14 @@ class CDPlayer:
             running = self._mpv_proc is not None
             paused  = self._paused
             song    = max(0, self._current_track - 1)
-            buffering = self._starting
-            if paused:
+            # A track-change seek counts as "buffering": the new track has no
+            # live audio position yet, so the UI shows a steady 0:00 (its
+            # interpolation ticker is gated on this flag) and the VFD shows
+            # STARTING — same as a cold spin-up. Avoids a 0 -> 0:01 -> 0 flap.
+            buffering = self._starting or self._seek_timer_pending
+            if buffering:
+                elapsed = 0.0
+            elif self._timer_paused:
                 elapsed = self._track_elapsed
             elif running:
                 elapsed = self._track_elapsed + (time.monotonic() - self._track_start)
@@ -319,6 +371,11 @@ class CDPlayer:
             self._mpv_proc = None
             self._current_track = 0
             self._paused = False
+            self._timer_paused = False
+            self._seek_timer_pending = False
+            self._seek_sync_pos = None
+            self._cold_anchor = False
+            self._resync_suppressed_until = 0.0
             self._track_elapsed = 0.0
             self._track_start = 0.0
             self._chapter_starts = []
@@ -546,6 +603,104 @@ class CDPlayer:
             return pos
         return self._track_elapsed + (time.monotonic() - self._track_start)
 
+    def _pause_timer_from_monitor(self, now: float):
+        with self._lock:
+            if not self._timer_paused:
+                self._track_elapsed = self._track_elapsed + (now - self._track_start)
+                self._timer_paused = True
+
+    def _resume_timer_from_monitor(self, now: float):
+        with self._lock:
+            if self._timer_paused and not self._paused:
+                self._track_start = now
+                self._timer_paused = False
+
+    def _track_rel_pos_locked(self, idx: int, pos: float) -> Optional[float]:
+        """Track-relative seconds for a disc-absolute mpv time-pos.
+
+        Caller must hold self._lock. Mirrors get_elapsed()'s priority:
+        cached chapter start (exact) → MusicBrainz cumulative durations
+        (< 1 s error, available immediately) → track 1 starts at disc 0.
+        Returns None when the track index can't be resolved yet.
+        """
+        if 0 <= idx < len(self._chapter_starts):
+            return max(0.0, float(pos) - self._chapter_starts[idx])
+        try:
+            from state import get_state
+            tracks = get_state().tracks
+            if tracks and 0 <= idx < len(tracks):
+                mb_start = float(sum(t.duration for t in tracks[:idx]))
+                return max(0.0, float(pos) - mb_start)
+        except Exception:
+            pass
+        if idx == 0:
+            return max(0.0, float(pos))
+        return None
+
+    def _sync_timer_to_time_pos(self, generation: int, pos: float, now: float):
+        with self._lock:
+            if generation != self._mpv_generation or self._paused or self._starting:
+                return
+            idx = self._current_track - 1
+
+            # Cold start: mpv is a fresh process, so the first real time-pos is a
+            # genuine near-start track position — there is no stale seek target to
+            # filter out (unlike an in-running track change). Anchor to it at once,
+            # even before the chapter list caches, using the best track-start
+            # estimate available. This makes the counter tick smoothly from ~0 with
+            # the audio instead of holding at 0 and jumping ~1-2 s once the TOC
+            # caches and advance is confirmed. Guarded to small positions: a large
+            # value means the monitor sampled late, and the standard confirm path
+            # below handles that case unchanged.
+            if self._cold_anchor and self._seek_timer_pending:
+                rel = self._track_rel_pos_locked(idx, pos)
+                if rel is not None and 0.0 <= rel < 4.0:
+                    self._track_elapsed = rel
+                    self._track_start = now
+                    self._timer_paused = False
+                    self._seek_timer_pending = False
+                    self._seek_sync_pos = None
+                    self._cold_anchor = False
+                    self._resync_suppressed_until = now + 8.0
+                    return
+                # Not yet resolvable (no chapter/MB data) or implausibly large —
+                # fall through to the standard hold/confirm logic.
+
+            if not (0 <= idx < len(self._chapter_starts)):
+                # Chapter starts not cached yet (cold-start race with the
+                # background TOC cache). If a seek has held at 0 past its
+                # deadline, stop waiting and free-run rather than freeze at 0.
+                if self._seek_timer_pending and now > self._seek_pending_deadline:
+                    self._track_start = now
+                    self._timer_paused = False
+                    self._seek_timer_pending = False
+                    self._seek_sync_pos = None
+                return
+            rel_pos = max(0.0, float(pos) - self._chapter_starts[idx])
+            if self._seek_timer_pending:
+                if self._seek_sync_pos is None or rel_pos <= self._seek_sync_pos + 0.25:
+                    self._seek_sync_pos = rel_pos
+                    return
+                # Audio is advancing: anchor to the REAL track position so the
+                # counter matches the audio (anchoring to 0 would lag behind).
+                self._track_elapsed = rel_pos
+                self._track_start = now
+                self._timer_paused = False
+                self._seek_timer_pending = False
+                self._seek_sync_pos = None
+                self._resync_suppressed_until = now + 8.0
+                return
+            if self._timer_paused:
+                return
+            timer_elapsed = self._track_elapsed + (now - self._track_start)
+            correction = rel_pos - timer_elapsed
+            if now < self._resync_suppressed_until:
+                return
+            if correction <= 1.0:
+                return
+            self._track_elapsed = rel_pos
+            self._track_start = now
+
     # ------------------------------------------------------------------
     # Internal: monitor thread
     # ------------------------------------------------------------------
@@ -596,6 +751,9 @@ class CDPlayer:
             with self._lock:
                 if generation != self._mpv_generation or not self._mpv_running():
                     break
+            # Sample time-pos faster during a track-change seek so the counter
+            # leaves 0 the instant audio starts (no visible step).
+            s.settimeout(0.3 if self._seek_timer_pending else 1.0)
             try:
                 chunk = s.recv(4096)
                 if not chunk:
@@ -608,20 +766,22 @@ class CDPlayer:
                 # If it hasn't advanced in 8 s while playing,
                 # assume disc was ejected and mpv is hung.
                 now = time.monotonic()
-                if now - _last_pos_chk >= 2.0 and not self._paused and not self._starting:
+                _pos_interval = 0.3 if self._seek_timer_pending else 2.0
+                if now - _last_pos_chk >= _pos_interval and not self._paused and not self._starting:
                     _last_pos_chk = now
                     if _paused_for_cache:
-                        if now - _cache_stall_since < 5.0:
-                            # Buffer drained — give the drive 5 s to recover before
+                        if now - _cache_stall_since < 3.0:
+                            # Buffer drained — give the drive 3 s to recover before
                             # the stall watchdog fires.  Beyond that it's genuinely stuck.
                             _stall_since = now
                     pos = self._ipc_query("time-pos")
                     if pos is None:
                         pass  # transient IPC failure — don't touch stall tracking
                     elif pos != _stall_pos:
+                        self._sync_timer_to_time_pos(generation, pos, now)
                         _stall_pos   = pos
                         _stall_since = now
-                    elif now - _stall_since > 8.0:
+                    elif now - _stall_since > 6.0:
                         logger.warning(
                             f"Playback stalled >{now - _stall_since:.0f}s "
                             f"(time-pos={pos}) — disc error"
@@ -659,10 +819,12 @@ class CDPlayer:
                         # Real stall: false→true transition.
                         _cache_stall_since = now_pfc
                         _paused_for_cache = True
+                        self._pause_timer_from_monitor(now_pfc)
                         logger.warning("mpv paused waiting for drive data (CDDA read retry)")
                     elif (not new_paused) and _paused_for_cache:
                         # Real recovery: true→false transition we previously logged.
                         _paused_for_cache = False
+                        self._resume_timer_from_monitor(now_pfc)
                         logger.info(
                             f"mpv cache refilled after "
                             f"{now_pfc - _cache_stall_since:.1f}s — resuming"
@@ -678,8 +840,10 @@ class CDPlayer:
                         # auto-pause event; suppress to avoid misleading logs.
                         _pause_baseline_seen = True
                     elif paused is True:
+                        self._pause_timer_from_monitor(time.monotonic())
                         logger.warning("mpv auto-paused (CDDA buffer underrun or drive stall)")
                     elif paused is False:
+                        self._resume_timer_from_monitor(time.monotonic())
                         logger.info("mpv auto-resumed")
 
                 elif event == "property-change" and msg.get("name") == "chapter":
@@ -693,10 +857,29 @@ class CDPlayer:
                             # command fires; monitor events from those seeks must not
                             # overwrite _current_track or trigger _on_track_end.
                             sequential = new_track == prev_track + 1 and prev_track > 0
+                            landed = new_track == prev_track and prev_track > 0
                             if sequential:
                                 self._current_track = new_track
+                                # Natural advance: audio is continuous across the
+                                # CDDA track boundary, so the timer keeps running
+                                # from 0 — there is no silent seek to wait out.
                                 self._track_elapsed = 0.0
                                 self._track_start   = time.monotonic()
+                                self._timer_paused  = False
+                                self._seek_timer_pending = False
+                                self._seek_sync_pos = None
+                                self._resync_suppressed_until = time.monotonic() + 8.0
+                            elif landed:
+                                # Same as a seek: hold at 0 through the silent seek
+                                # and anchor on real audio progress instead of
+                                # counting from the chapter-change event.
+                                self._track_elapsed = 0.0
+                                self._track_start   = time.monotonic()
+                                self._timer_paused  = True
+                                self._seek_timer_pending = True
+                                self._seek_sync_pos = None
+                                self._cold_anchor = False
+                                self._resync_suppressed_until = time.monotonic() + 8.0
                         if sequential:
                             logger.info(f"Track advanced: {prev_track} → {new_track}")
                             if self._on_track_end:

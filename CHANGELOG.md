@@ -16,6 +16,36 @@ Deployed appliances track tagged releases, not the `main` branch HEAD.
 
 ## [Unreleased]
 
+## [1.3.0] - 2026-07-31
+
+### Added
+
+- The status line shows **NO DAC** when a disc is loaded but no usable USB DAC
+  is present, so a play blocked by the audio gate has a visible reason instead
+  of appearing to do nothing.
+
+### Fixed
+
+- Transport commands (`/play`, `/next`, `/prev`, `/eject`) stay responsive when
+  a disc is ejected during playback. mpv teardown, which can block on
+  uninterruptible drive I/O, was moved off the request path so the API no
+  longer hangs (deadlocks) during eject-in-playback.
+- Disc detection stays reliable when the optical drive wedges on I/O; a stuck,
+  uninterruptible read no longer stalls the monitor loop.
+- A disc removed the instant it is recognized now reaches IDLE within the
+  drive's physical settling time (~1 s) instead of up to 15 s. The monitor
+  polls for removal immediately after a disc loads, rather than waiting out the
+  slow idle poll interval. Other conditions (eject while stopped or during
+  playback) are unchanged.
+- The elapsed counter begins at 0:00 in sync with the audio on a cold start and
+  ticks up in real time, instead of holding at 0 and then jumping ~1-2 s once
+  playback is confirmed. Cold starts anchor the timer to mpv's real playback
+  position on the first valid sample; the counter still never leads the audio.
+- `POST /play` and `POST /play/{n}` re-enumerate audio devices before starting.
+  A DAC unplugged since the last periodic refresh is detected immediately:
+  playback is refused with a clear reason and the UI reflects the missing DAC,
+  instead of mpv failing silently on a device that is gone.
+
 ## [1.2.1] - 2026-06-09
 
 ### Fixed
