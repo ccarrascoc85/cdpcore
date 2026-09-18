@@ -16,6 +16,38 @@ Deployed appliances track tagged releases, not the `main` branch HEAD.
 
 ## [Unreleased]
 
+## [1.3.2] - 2026-09-18
+
+Critical corrective release: an unreadable disc sector could take the whole
+appliance down (fake PLAYING, unresponsive drive, reboot required).
+
+### Fixed
+
+- A cold start whose disc TOC never arrives is now reported instead of faked.
+  When the optical drive stops answering while mpv opens it, the player used
+  to wait out its 60 s deadline, log "Playing track N" and unpause an mpv
+  with no file loaded: the UI showed PLAYING with a frozen 0:00 counter and
+  no way to recover. It now tears mpv down, `POST /play` and `POST /play/{n}`
+  return HTTP 503 `drive_stalled`, the state goes back to LOADED with
+  `error: "drive_stalled"` in `/status`, and the status line shows
+  **DRIVE ERROR**. Playback of the same disc can be retried; the error clears
+  on the next play attempt or disc change.
+- Drive status ioctls (media-present polls, speed set) run on their own
+  two-thread pool instead of the event loop's default executor. A wedged
+  drive leaves each such call stuck in uninterruptible I/O; on the shared
+  pool those leaked threads starved audio-device refresh and metadata work.
+- The disc monitor no longer polls `CDROM_DRIVE_STATUS` while mpv is opening
+  the drive on a cold start, so the backend does not interleave status
+  commands with mpv's TOC read on the same USB bridge in that window. mpv's
+  own events still catch a removal there.
+- The udev disc-insertion rule matches again on current Raspberry Pi OS.
+  `cdrom_id` from systemd 252 no longer sets `ID_CDROM_MEDIA_CD_AUDIO`, so
+  `cd-setspeed.sh` and `cd-inserted.sh` had not run since June; disc
+  detection worked only through the backend's polling fallback. The rule now
+  matches `ID_CDROM_MEDIA_TRACK_COUNT_AUDIO`. udev rules are not covered by
+  the in-app updater: re-run `install.sh` or copy `system/99-cdrom.rules` to
+  `/etc/udev/rules.d/` and reload udev.
+
 ## [1.3.1] - 2026-09-18
 
 ### Fixed

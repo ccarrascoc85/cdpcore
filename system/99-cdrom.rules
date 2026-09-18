@@ -13,7 +13,9 @@ KERNEL!="sr[0-9]*", GOTO="cdrom_end"
 SYMLINK+="cdrom"
 
 # Disc inserted — enforce 1x speed first, then notify backend
-ENV{ID_CDROM_MEDIA}=="1", ENV{ID_CDROM_MEDIA_CD_AUDIO}=="1", \
+# systemd >= 252 cdrom_id no longer sets ID_CDROM_MEDIA_CD_AUDIO; the audio
+# track count is the reliable marker of an audio CD on current Raspberry Pi OS.
+ENV{ID_CDROM_MEDIA}=="1", ENV{ID_CDROM_MEDIA_TRACK_COUNT_AUDIO}=="?*", \
     RUN+="/usr/local/bin/cd-setspeed.sh", \
     RUN+="/usr/local/bin/cd-inserted.sh"
 

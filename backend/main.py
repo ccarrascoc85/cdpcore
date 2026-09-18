@@ -48,6 +48,15 @@ _DISCID_EXECUTOR = concurrent.futures.ThreadPoolExecutor(
     thread_name_prefix="discid",
 )
 _DISCID_READ_EXPIRY = 45.0
+# Drive status ioctls (media-present polls, speed set) run here, not in the
+# loop's default executor: a wedged drive leaves each call stuck in
+# uninterruptible I/O, and on the shared pool those leaked threads starved
+# audio-device refresh and metadata work. Bounded to 2 so a stall costs at
+# most two threads; further calls simply time out as "unknown".
+_DRIVE_EXECUTOR = concurrent.futures.ThreadPoolExecutor(
+    max_workers=2,
+    thread_name_prefix="drive",
+)
 
 
 def _log_drive_warning(key: str, message: str):
@@ -68,7 +77,7 @@ def _log_drive_timeout(label: str, timeout: float):
 async def _drive_call_async(loop: asyncio.AbstractEventLoop, label: str,
                             fn: Callable[[], _T], timeout: float = 3.0):
     try:
-        return await asyncio.wait_for(loop.run_in_executor(None, fn), timeout=timeout)
+        return await asyncio.wait_for(loop.run_in_executor(_DRIVE_EXECUTOR, fn), timeout=timeout)
     except asyncio.TimeoutError:
         _log_drive_timeout(label, timeout)
         return _DRIVE_UNKNOWN
@@ -425,6 +434,12 @@ async def _disc_monitor():
             # immediate in both states. read_disc_id below only runs to identify
             # a newly inserted disc (last_id is None).
             if last_id is not None:
+                if player.cold_start_pending():
+                    # mpv is opening the drive and reading the TOC. Don't
+                    # interleave CDROM_DRIVE_STATUS with that on the same USB
+                    # bridge; mpv's own events catch a removal in this window.
+                    await asyncio.sleep(1)
+                    continue
                 try:
                     present = await _drive_call_async(
                         loop, "disc monitor media-present ioctl",
@@ -736,6 +751,19 @@ def _playback_device_ready() -> tuple[bool, str]:
     return True, ""
 
 
+def _mark_drive_stalled(state) -> None:
+    """Cold start failed because the drive stopped answering: back to LOADED
+    (the disc and metadata are still there) with a visible error reason."""
+    state.state        = CDState.LOADED
+    state.elapsed      = 0
+    state.track_number = 0
+    state.track_title  = None
+    state.buffering    = False
+    state.error        = "drive_stalled"
+    logger.error("Playback refused: optical drive stalled (drive_stalled)")
+    _schedule_broadcast()
+
+
 # ---------------------------------------------------------------------------
 # Playback controls
 # ---------------------------------------------------------------------------
@@ -773,11 +801,15 @@ def play_from_start():
         state.state        = CDState.PLAYING
         state.track_number = 1
         state.elapsed      = 0
+        state.error        = None
         if state.tracks:
             state.track_title = state.tracks[0].title
         player.play(1, len(state.tracks), alsa_device=state.alsa_device)
         _schedule_broadcast()
         return {"ok": True}
+    except player.DriveStallError:
+        _mark_drive_stalled(state)
+        raise HTTPException(status_code=503, detail="drive_stalled")
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
@@ -806,11 +838,15 @@ def play_track(track_number: int):
         state.state        = CDState.PLAYING
         state.track_number = track_number
         state.elapsed      = 0
+        state.error        = None
         if state.tracks and 1 <= track_number <= len(state.tracks):
             state.track_title = state.tracks[track_number - 1].title
         player.play(track_number, len(state.tracks), alsa_device=state.alsa_device)
         _schedule_broadcast()
         return {"ok": True}
+    except player.DriveStallError:
+        _mark_drive_stalled(state)
+        raise HTTPException(status_code=503, detail="drive_stalled")
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 

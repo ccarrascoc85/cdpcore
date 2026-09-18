@@ -1075,9 +1075,14 @@ function updateVfd(s) {
   // the status line so a loaded disc that won't start has a visible reason
   // ("NO DAC") instead of appearing to do nothing when play is pressed.
   const noDac = (s.audio_state === 'no_usb' || s.audio_state === 'device_missing');
+  // The drive stopped answering during a cold start: the backend tore mpv
+  // down and went back to LOADED with error=drive_stalled. Show it instead
+  // of a plain READY so the operator knows the drive needs attention.
+  const driveErr = (s.error === 'drive_stalled' && s.state === 'loaded');
   document.getElementById('vfd-label').textContent =
     s.loading    ? 'READING'  :
     s.buffering  ? 'STARTING' :
+    driveErr     ? 'DRIVE ERROR' :
     (noDac && s.state === 'loaded') ? 'NO DAC' :
     (labels[s.state] || s.state.toUpperCase());
   if (s.loading || s.buffering) pulse.className = 'vfd-pulse playing';

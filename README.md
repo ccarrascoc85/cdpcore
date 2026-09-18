@@ -569,7 +569,7 @@ CDPcore exposes a REST API and WebSocket interface, enabling integration with ex
 | WS | `/ws` | WebSocket - server pushes state JSON on every change |
 | GET | `/status` | Current playback state (REST fallback) |
 | GET | `/tracks` | Track list for loaded disc |
-| POST | `/play` | Resume if paused, otherwise play from track 1 |
+| POST | `/play` | Resume if paused, otherwise play from track 1 (503 `drive_stalled` if the drive stops answering during start-up) |
 | POST | `/play/{n}` | Play track number n (a request issued while mpv is still starting is queued; the latest request wins) |
 | POST | `/pause` | Toggle pause/resume |
 | POST | `/stop` | Stop playback |
@@ -619,13 +619,15 @@ CDPcore exposes a REST API and WebSocket interface, enabling integration with ex
   "loading":      false,
   "buffering":    false,
   "alsa_device":  "hw:1,0",
-  "audio_state":  "usb_single"
+  "audio_state":  "usb_single",
+  "error":        null
 }
 ```
 
 - `loading` - `true` while metadata is being fetched (VFD shows READING)
 - `buffering` - `true` while mpv is spinning up before first audio output (VFD shows STARTING)
 - `alsa_device` - currently selected ALSA device id used by the next playback start
+- `error` - `null`, or `drive_stalled` when the last play attempt failed because the optical drive stopped answering while mpv opened the disc (the status line shows DRIVE ERROR; state returns to `loaded`, cleared on the next play attempt or disc change)
 - `audio_state` - one of `usb_single`, `usb_multiple`, `no_usb`, `device_missing`, `default`. `/play` and `/play/{n}` return HTTP 409 when the state is `device_missing`, `no_usb`, or `usb_multiple` with `alsa_device` no longer in the device list. The appliance requires a valid USB DAC for playback; there is no fallback to the Pi internal audio output
 
 ---

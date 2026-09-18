@@ -41,6 +41,16 @@ def _aplay_device(hw_device: str) -> str:
     return hw_device
 
 
+# Cold start: how long to wait for mpv to read the CDDA TOC before declaring
+# the drive stalled. A healthy drive answers in ~2-8 s; some take 60 s from a
+# cold stop. Past this, the drive is wedged and mpv will never produce audio.
+COLD_START_TOC_TIMEOUT = 60.0
+
+
+class DriveStallError(RuntimeError):
+    """mpv could not read the disc TOC in time: the optical drive is not answering."""
+
+
 class CDPlayer:
     """mpv-based real-time CD player with IPC control.
 
@@ -135,15 +145,29 @@ class CDPlayer:
             # Wait for IPC socket, then wait until mpv has read the CDDA TOC
             # (chapter property becomes non-None), then seek to the target track.
             self._wait_for_ipc(timeout=10)
-            deadline = time.monotonic() + 60
+            deadline = time.monotonic() + COLD_START_TOC_TIMEOUT
+            toc_ready = False
             while time.monotonic() < deadline:
                 if self._ipc_query("chapter") is not None:
+                    toc_ready = True
                     break
                 if self.is_stopped():
                     with self._lock:
                         self._cold_start_pending = False
                     return  # stop() was called while waiting — abort
                 time.sleep(0.5)
+            if not toc_ready:
+                # The drive never answered mpv's TOC read. Unpausing now would
+                # only show PLAYING with a frozen counter; tear mpv down and
+                # report the stall so the UI and the caller see a real reason.
+                logger.error(
+                    f"Drive stalled: no TOC from mpv within {COLD_START_TOC_TIMEOUT:.0f}s "
+                    f"(track {track_number}); tearing mpv down"
+                )
+                with self._lock:
+                    self._cold_start_pending = False
+                self.stop()
+                raise DriveStallError("drive_stalled")
             with self._lock:
                 # A play(N) issued during spin-up re-targeted _current_track;
                 # start from that track, not the one this call was given.
@@ -239,6 +263,12 @@ class CDPlayer:
     # ------------------------------------------------------------------
     # State queries
     # ------------------------------------------------------------------
+
+    @property
+    def cold_start_pending(self) -> bool:
+        """True while mpv is opening the drive and reading the TOC (cold start)."""
+        with self._lock:
+            return self._cold_start_pending
 
     @property
     def drive_busy(self) -> bool:
@@ -967,6 +997,10 @@ def setup_player(on_track_end_callback: Callable[[int], None],
 
 def drive_busy() -> bool:
     return _player.drive_busy
+
+
+def cold_start_pending() -> bool:
+    return _player.cold_start_pending
 
 
 def _track_start_sec(track_number: int) -> float:

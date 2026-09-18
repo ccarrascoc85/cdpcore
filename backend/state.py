@@ -39,6 +39,7 @@ class CDPlayerState:
     audio_state: str = "default"  # usb_single | usb_multiple | no_usb | device_missing | default
     loading: bool = False
     buffering: bool = False
+    error: Optional[str] = None   # last playback failure reason (e.g. drive_stalled); None when clear
 
     def reset(self):
         self.state = CDState.IDLE
@@ -54,6 +55,7 @@ class CDPlayerState:
         self.duration = 0
         self.loading = False
         self.buffering = False
+        self.error = None
 
     def to_status_dict(self) -> dict:
         return {
@@ -71,6 +73,7 @@ class CDPlayerState:
             "buffering": self.buffering,
             "alsa_device": self.alsa_device,
             "audio_state": self.audio_state,
+            "error": self.error,
         }
 
 
