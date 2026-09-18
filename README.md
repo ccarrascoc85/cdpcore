@@ -570,7 +570,7 @@ CDPcore exposes a REST API and WebSocket interface, enabling integration with ex
 | GET | `/status` | Current playback state (REST fallback) |
 | GET | `/tracks` | Track list for loaded disc |
 | POST | `/play` | Resume if paused, otherwise play from track 1 |
-| POST | `/play/{n}` | Play track number n |
+| POST | `/play/{n}` | Play track number n (a request issued while mpv is still starting is queued; the latest request wins) |
 | POST | `/pause` | Toggle pause/resume |
 | POST | `/stop` | Stop playback |
 | POST | `/next` | Next track |

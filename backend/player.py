@@ -71,6 +71,11 @@ class CDPlayer:
         self._chapter_starts: list = []
         # True between play() call and first valid IPC time-pos (mpv spinning up)
         self._starting: bool = False
+        # True from mpv spawn until the cold-start path has issued its chapter
+        # seek + unpause. While set, play(N) only re-targets _current_track (the
+        # queued track; last request wins) instead of sending IPC commands to a
+        # socket that has not read the TOC yet.
+        self._cold_start_pending: bool = False
         self._mpv_generation: int = 0
         self._teardown_generations: set[int] = set()
 
@@ -99,6 +104,7 @@ class CDPlayer:
                     generation = self._mpv_generation
                     self._mpv_proc = proc
                     self._starting = True
+                    self._cold_start_pending = True
                 logger.info(f"mpv started (pid={proc.pid})")
                 threading.Thread(
                     target=self._monitor_mpv,
@@ -116,6 +122,14 @@ class CDPlayer:
                 self._resync_suppressed_until = 0.0
                 self._track_elapsed = 0.0
                 self._track_start   = time.monotonic()
+                queued = mpv_running and self._cold_start_pending
+
+        if queued:
+            # mpv is still spinning up under another play() call. That call
+            # reads _current_track once the TOC is available and seeks there,
+            # so the latest requested track wins without touching IPC now.
+            logger.info(f"Queued track {track_number}/{total_tracks} (mpv still starting)")
+            return
 
         if not mpv_running:
             # Wait for IPC socket, then wait until mpv has read the CDDA TOC
@@ -126,8 +140,15 @@ class CDPlayer:
                 if self._ipc_query("chapter") is not None:
                     break
                 if self.is_stopped():
+                    with self._lock:
+                        self._cold_start_pending = False
                     return  # stop() was called while waiting — abort
                 time.sleep(0.5)
+            with self._lock:
+                # A play(N) issued during spin-up re-targeted _current_track;
+                # start from that track, not the one this call was given.
+                track_number = self._current_track or track_number
+                self._cold_start_pending = False
             if track_number > 1:
                 self._ipc_send(["set_property", "chapter", track_number - 1])
             threading.Thread(
@@ -380,6 +401,7 @@ class CDPlayer:
             self._track_start = 0.0
             self._chapter_starts = []
             self._starting = False
+            self._cold_start_pending = False
 
             if proc is None or generation in self._teardown_generations:
                 return None, generation, None

@@ -16,6 +16,23 @@ Deployed appliances track tagged releases, not the `main` branch HEAD.
 
 ## [Unreleased]
 
+## [1.3.1] - 2026-09-18
+
+### Fixed
+
+- A track selected while the player shows STARTING is now honoured. Previously
+  `POST /play/{n}` issued during mpv spin-up sent a chapter seek to an IPC
+  socket that had not read the TOC yet; the command was lost, playback began
+  on track 1 while the UI showed the requested track, and a second tap was
+  needed. The request is now queued and applied once the TOC is available.
+  Only the latest request is kept: tapping 9 and then 8 during STARTING starts
+  on 8.
+- The progress bar no longer slides for ~1 s to catch up when the page is
+  reloaded or the tab returns to the foreground. The CSS transition on the
+  bar predated client-side interpolation and had become a visual lag; the bar
+  now jumps to the real position immediately and still moves continuously
+  during playback.
+
 ## [1.3.0] - 2026-07-31
 
 ### Added
