@@ -571,9 +571,26 @@ async def _disc_monitor():
                 if speed_ok is _DRIVE_UNKNOWN:
                     speed_ok = False
                 if speed_ok:
-                    logger.info("Drive speed set to 1x (CDROM_SELECT_SPEED accepted)")
+                    logger.info("Drive speed 1x requested (CDROM_SELECT_SPEED accepted by the kernel)")
                 else:
                     logger.warning("Drive does not support CDROM_SELECT_SPEED — running at default speed (more noise expected)")
+                # Acceptance of the ioctl says nothing about what the drive
+                # does; measure and report the real read speed.
+                measured = await _drive_call_async(
+                    loop, "disc monitor measure_read_speed",
+                    cd_reader.measure_read_speed, timeout=25.0,
+                )
+                if measured is _DRIVE_UNKNOWN or measured is None:
+                    cd_reader.drive_speed_measured = None
+                    logger.warning("Drive read speed could not be measured")
+                elif speed_ok and measured <= cd_reader.SPEED_1X_CONFIRMED_MAX:
+                    logger.info(f"Drive speed 1x confirmed (measured {measured:.1f}x)")
+                elif speed_ok:
+                    logger.warning(
+                        f"Drive ignores CDROM_SELECT_SPEED: requested 1x, reads at {measured:.1f}x"
+                    )
+                else:
+                    logger.info(f"Drive reads at {measured:.1f}x (default speed)")
                 if last_id is not None:
                     # Swap: stop any current playback before loading new disc
                     try:

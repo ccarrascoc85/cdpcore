@@ -122,6 +122,136 @@ def set_drive_speed(speed: int = 1, device: str = CDROM_DEVICE) -> bool:
         return False
 
 
+# Measured CDDA read throughput of the current disc as a multiple of 1x
+# (75 frames x 2352 bytes = 176,400 B/s). None until measured. Set at disc
+# detection right after the speed request, so the operator sees what the drive
+# actually does: some USB drives accept CDROM_SELECT_SPEED and ignore it (the
+# reference HL-DT-ST GP30NB20 reads ~4.9x whatever speed is requested).
+drive_speed_measured: Optional[float] = None
+CDDA_1X_BYTES_PER_SEC = 75 * 2352
+SPEED_1X_CONFIRMED_MAX = 1.5   # measured x-factor at or below this counts as real 1x
+
+
+def _sg_read_cd(fd: int, lba: int, nframes: int, timeout_ms: int) -> None:
+    """One MMC READ CD (CD-DA, user data only) through SG_IO.
+
+    Single attempt, no kernel retries: on a bad sector the drive answers with
+    a sense error after its own internal timeout (~7 s on the reference
+    drive) and this raises instead of looping. Allowed for the `cdrom` group
+    without root (READ CD is on the kernel's unprivileged whitelist), which is
+    the same path mpv/libcdio use.
+    """
+    import ctypes, fcntl
+    SG_IO = 0x2285
+    SG_DXFER_FROM_DEV = -3
+
+    class _SgIoHdr(ctypes.Structure):
+        _fields_ = [
+            ("interface_id", ctypes.c_int), ("dxfer_direction", ctypes.c_int),
+            ("cmd_len", ctypes.c_ubyte), ("mx_sb_len", ctypes.c_ubyte),
+            ("iovec_count", ctypes.c_ushort), ("dxfer_len", ctypes.c_uint),
+            ("dxferp", ctypes.c_void_p), ("cmdp", ctypes.c_void_p),
+            ("sbp", ctypes.c_void_p), ("timeout", ctypes.c_uint),
+            ("flags", ctypes.c_uint), ("pack_id", ctypes.c_int),
+            ("usr_ptr", ctypes.c_void_p), ("status", ctypes.c_ubyte),
+            ("masked_status", ctypes.c_ubyte), ("msg_status", ctypes.c_ubyte),
+            ("sb_len_wr", ctypes.c_ubyte), ("host_status", ctypes.c_ushort),
+            ("driver_status", ctypes.c_ushort), ("resid", ctypes.c_int),
+            ("duration", ctypes.c_uint), ("info", ctypes.c_uint),
+        ]
+
+    cdb = (ctypes.c_ubyte * 12)(
+        0xBE, 0x04,                                   # READ CD, expected sector type CD-DA
+        (lba >> 24) & 0xFF, (lba >> 16) & 0xFF, (lba >> 8) & 0xFF, lba & 0xFF,
+        0, (nframes >> 8) & 0xFF, nframes & 0xFF,
+        0x10, 0, 0,                                   # user data only
+    )
+    buf = ctypes.create_string_buffer(2352 * nframes)
+    sense = ctypes.create_string_buffer(32)
+    hdr = _SgIoHdr()
+    hdr.interface_id = ord("S")
+    hdr.dxfer_direction = SG_DXFER_FROM_DEV
+    hdr.cmd_len = 12
+    hdr.mx_sb_len = 32
+    hdr.dxfer_len = 2352 * nframes
+    hdr.dxferp = ctypes.cast(buf, ctypes.c_void_p)
+    hdr.cmdp = ctypes.cast(cdb, ctypes.c_void_p)
+    hdr.sbp = ctypes.cast(sense, ctypes.c_void_p)
+    hdr.timeout = timeout_ms
+    fcntl.ioctl(fd, SG_IO, hdr)
+    if hdr.status != 0 or hdr.host_status != 0 or hdr.driver_status != 0 or hdr.resid != 0:
+        raise OSError(
+            f"READ CD failed at LBA {lba}: status={hdr.status} host={hdr.host_status} "
+            f"driver={hdr.driver_status} resid={hdr.resid}"
+        )
+
+
+def _max_frames_per_read(default: int = 45) -> int:
+    """Largest READ CD transfer the block layer accepts for sr0, in frames.
+
+    SG_IO rejects (EIO) any transfer above the queue's max_hw_sectors; for
+    usb-storage that is 120 KiB by default, i.e. 52 frames, so 75-frame reads
+    (a full second, 172 KB) never leave the host. Read the limit from sysfs;
+    fall back to 45 frames when unavailable.
+    """
+    try:
+        kb = int(Path("/sys/block/sr0/queue/max_hw_sectors_kb").read_text().strip())
+        return max(1, min(75, (kb * 1024) // 2352))
+    except Exception:
+        return default
+
+
+def measure_read_speed(device: str = CDROM_DEVICE, lba: int = 1500,
+                       frames: Optional[int] = None, chunks: Optional[int] = None,
+                       timeout_ms: int = 5000, _reader=None) -> Optional[float]:
+    """Measure the drive's real CDDA read throughput and return it as an x-factor.
+
+    Reads one warm-up run (absorbs spin-up and seek) and then `chunks` runs of
+    `frames` audio frames each, timing only the latter. By default the run
+    size is the largest transfer the device accepts (see
+    `_max_frames_per_read`) and the runs cover ~3 s of audio: ~0.6 s at 4.9x,
+    3 s at a true 1x. Runs only when the drive is idle (disc detection). Any
+    read failure or timeout returns None rather than retrying: a bad sector
+    must never turn this into a stall.
+
+    Records the result in `drive_speed_measured` for /system/info.
+    `_reader(lba, nframes)` is injectable for tests.
+    """
+    import time as _time
+    global drive_speed_measured
+    if frames is None:
+        frames = _max_frames_per_read()
+    if chunks is None:
+        chunks = max(1, -(-225 // frames))         # ceil(3 s of audio / frames)
+    fd = None
+    try:
+        if _reader is None:
+            fd = os.open(device, os.O_RDONLY | os.O_NONBLOCK)
+
+            def _reader(start, n):
+                _sg_read_cd(fd, start, n, timeout_ms)
+        _reader(lba, frames)                       # warm-up: spin-up + seek, not timed
+        t0 = _time.monotonic()
+        for i in range(1, chunks + 1):
+            _reader(lba + i * frames, frames)
+        elapsed = _time.monotonic() - t0
+        if elapsed <= 0:
+            return None
+        factor = (chunks * frames * 2352) / elapsed / CDDA_1X_BYTES_PER_SEC
+        drive_speed_measured = round(factor, 1)
+        return drive_speed_measured
+    except Exception as e:
+        logger.warning(f"Read-speed measurement failed: {e}")
+        drive_speed_measured = None
+        return None
+    finally:
+        if fd is not None:
+            try:
+                os.close(fd)
+            except OSError:
+                pass
+
+
 def read_disc_id() -> Optional[str]:
     """Read the MusicBrainz disc ID from the inserted CD (lightweight poll)."""
     try:

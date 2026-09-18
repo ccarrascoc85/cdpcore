@@ -4,6 +4,8 @@ Dedicated CD playback appliance for Raspberry Pi.
 
 *CDPcore is a CD player with network-based control, designed for bit-perfect playback and full control over the audio pipeline.*
 
+![CDPcore web UI playing a disc](assets/screenshots/desktop-dark.png)
+
 Audio flows directly from the CD drive to the DAC:
 
 CD drive -> **mpv** -> ALSA -> USB DAC (USB Audio Class compliant DAC)
@@ -111,19 +113,27 @@ pass - avoiding multiple physical disc reads during metadata loading.
 The REST endpoints `/cd/inserted` and `/cd/ejected` still accept udev webhook
 calls but are secondary to the polling mechanism.
 
-### Silent play - 1x read speed
+### Quiet play - lowest read speed the drive allows
 
-The drive runs at **1x speed** during the entire session, i.e. real-time CDDA
-playback speed. This is enforced by **udev** - `cd-setspeed.sh` calls
-`eject -x 1` on every disc insertion, setting the drive speed before the
-backend even detects the disc. mpv does not override the drive speed; it
-inherits the 1x setting from udev.
+On every disc insertion CDPcore asks the drive for **1x** (real-time CDDA
+speed) through `CDROM_SELECT_SPEED`, both from udev (`cd-setspeed.sh` runs
+`eject -x 1`) and from the backend when it detects the disc. mpv does not
+override it.
 
-At 1x, the drive motor runs at its lowest RPM - eliminating the audible
-spin-up whine and high-frequency bearing noise typical of 24-48x ripping
-speeds. Audio data is read in real time (a standard CD plays at exactly 1x), so
-there is no intentional high-speed ripping phase. This reduces noise,
-vibration, and speed-related read instability.
+Whether the drive honours the request is up to its firmware. Many slim USB
+drives accept the command and keep reading at their own minimum, typically
+4-5x; the reference HL-DT-ST GP30NB20 reads at about 4.9x whatever is
+requested. So the backend **measures** the real read throughput right after
+the request (three 1-second READ CD runs) and reports it on the system page:
+`1× confirmed (measured 1.1×)` when the drive obeys, or `1× requested, drive
+reads at 4.9× (speed selection ignored by this drive)` when it does not. The
+journal carries the same line. Playback is unaffected either way; the
+difference is mechanical noise.
+
+At true 1x the drive motor runs at its lowest RPM, eliminating the spin-up
+whine and bearing noise of ripping speeds. Audio is always consumed in real
+time, so there is no high-speed ripping phase in either case: the drive reads
+in short bursts and idles between them.
 
 mpv's demuxer buffer is capped at **512 KiB** (~3 s of audio). Combined with
 the ALSA and decoder pipeline, the total in-flight buffer is roughly 11 s -
@@ -206,6 +216,14 @@ The CDPcore interface is served at `http://cdpcore.local:8000/` and provides:
 - Responsive layout for mobile (<= 576 px breakpoint)
 - Gear icon linking to the system management page
 - Installable to the home screen as a standalone app (Samsung Internet on Android, Safari on iOS) via Add to Home Screen
+
+<p align="center">
+  <img src="assets/screenshots/playback.gif" alt="Playback with the elapsed counter and progress bar running" width="70%">
+</p>
+<p align="center">
+  <img src="assets/screenshots/desktop-light.png" alt="Light theme" width="64%">
+  <img src="assets/screenshots/mobile-dark.png" alt="Mobile layout" width="27%">
+</p>
 
 The UI connects to `/ws` via WebSocket on load. The server pushes a state snapshot every second (for elapsed time) and immediately on any state change (disc insert, track advance, play/pause/stop, eject). If the WebSocket drops, the UI falls back to polling `/status` every 2 s and reconnects automatically.
 

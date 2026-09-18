@@ -126,9 +126,10 @@ def get_system_info() -> dict:
         info["drive"] = {
             "model":                 f"{vendor} {model}".strip() or "Unknown",
             "speed_control":         _cdr.speed_control_supported,  # None = not yet tested
+            "speed_measured":        _cdr.drive_speed_measured,     # x-factor, None = not measured
         }
     except Exception:
-        info["drive"] = {"model": "Unknown", "speed_control": None}
+        info["drive"] = {"model": "Unknown", "speed_control": None, "speed_measured": None}
 
     # Roon Bridge (optional — only present if service unit exists)
     try:

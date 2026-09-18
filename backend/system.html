@@ -327,7 +327,7 @@ html.light .card-title { background: #d0ccc4; }
         <span class="row-value" id="s-drive-model">—</span>
       </div>
       <div class="row">
-        <span class="row-label">Speed control (1×)</span>
+        <span class="row-label">Read speed</span>
         <span class="row-value" id="s-drive-speed">—</span>
       </div>
     </div>
@@ -569,14 +569,28 @@ function apply(d) {
   /* Drive */
   const drv = d.drive || {};
   document.getElementById('s-drive-model').textContent = drv.model || '—';
+  // speed_control: did the kernel accept CDROM_SELECT_SPEED (1x request).
+  // speed_measured: what the drive actually delivers, measured at disc
+  // detection. Acceptance without a ~1x measurement means the drive ignores
+  // the request; say so instead of claiming 1x.
   const sc = drv.speed_control;
+  const sm = (typeof drv.speed_measured === 'number') ? drv.speed_measured : null;
   const scEl = document.getElementById('s-drive-speed');
   if (sc === null || sc === undefined) {
     scEl.textContent = 'Not tested (insert a disc)';
     scEl.style.color = 'var(--txt-mid)';
-  } else if (sc) {
-    scEl.textContent = 'Supported';
+  } else if (sc && sm !== null && sm <= 1.5) {
+    scEl.textContent = '1× confirmed (measured ' + sm.toFixed(1) + '×)';
     scEl.style.color = 'var(--green)';
+  } else if (sc && sm !== null) {
+    scEl.textContent = '1× requested, drive reads at ' + sm.toFixed(1) + '× (speed selection ignored by this drive)';
+    scEl.style.color = 'var(--amber)';
+  } else if (sc) {
+    scEl.textContent = '1× requested (not measured)';
+    scEl.style.color = 'var(--txt-mid)';
+  } else if (sm !== null) {
+    scEl.textContent = 'Not supported — drive reads at ' + sm.toFixed(1) + '×';
+    scEl.style.color = 'var(--red)';
   } else {
     scEl.textContent = 'Not supported — running at default speed';
     scEl.style.color = 'var(--red)';

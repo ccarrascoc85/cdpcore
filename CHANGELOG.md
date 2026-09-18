@@ -16,6 +16,26 @@ Deployed appliances track tagged releases, not the `main` branch HEAD.
 
 ## [Unreleased]
 
+### Added
+
+- README screenshots and a playback GIF of the web UI (desktop dark and
+  light themes, mobile layout).
+- The backend measures the drive's real CDDA read speed at disc detection
+  (three 1-second READ CD runs after the 1x request) and exposes it as
+  `speed_measured` in `/system/info`. The system page's "Read speed" row
+  now says `1× confirmed (measured N×)`, or `1× requested, drive reads at N×
+  (speed selection ignored by this drive)`, instead of "Supported" whenever
+  the kernel merely accepted the ioctl. The reference HL-DT-ST GP30NB20
+  accepts the request and reads at ~4.9x regardless.
+
+### Changed
+
+- The disc-detection log line no longer claims "Drive speed set to 1x" on
+  ioctl acceptance alone; it reports the requested and measured speeds.
+- README "Silent play - 1x read speed" rewritten as "Quiet play - lowest read
+  speed the drive allows" to match what the appliance can actually
+  guarantee.
+
 ## [1.3.2] - 2026-09-18
 
 Critical corrective release: an unreadable disc sector could take the whole
