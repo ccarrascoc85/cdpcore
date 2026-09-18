@@ -77,6 +77,12 @@ install -d -m 0700 -o "$SERVICE_USER" -g "$SERVICE_USER" "$CONFIG_DIR"
 echo "==> Configuring sudo permissions for system management"
 install -m 440 "$SCRIPT_DIR/system/cdpcore-sudoers" /etc/sudoers.d/cdpcore
 
+echo "==> Installing persistent, bounded journal config"
+install -d -m 0755 /etc/systemd/journald.conf.d
+cp "$SCRIPT_DIR/system/journald-cdpcore.conf" /etc/systemd/journald.conf.d/cdpcore.conf
+install -d -m 2755 -g systemd-journal /var/log/journal
+systemctl restart systemd-journald 2>/dev/null || true
+
 echo "==> Installing udev rules"
 cp "$SCRIPT_DIR/system/99-cdrom.rules"          /etc/udev/rules.d/
 cp "$SCRIPT_DIR/system/99-audio.rules"          /etc/udev/rules.d/

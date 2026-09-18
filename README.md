@@ -113,27 +113,19 @@ pass - avoiding multiple physical disc reads during metadata loading.
 The REST endpoints `/cd/inserted` and `/cd/ejected` still accept udev webhook
 calls but are secondary to the polling mechanism.
 
-### Quiet play - lowest read speed the drive allows
+### Quiet play - the drive's minimum read speed
 
-On every disc insertion CDPcore asks the drive for **1x** (real-time CDDA
-speed) through `CDROM_SELECT_SPEED`, both from udev (`cd-setspeed.sh` runs
-`eject -x 1`) and from the backend when it detects the disc. mpv does not
-override it.
+On every disc insertion CDPcore asks the drive for 1x (real-time CDDA speed)
+through `CDROM_SELECT_SPEED`, from udev (`cd-setspeed.sh`) and again from the
+backend when it detects the disc. mpv does not override it.
 
-Whether the drive honours the request is up to its firmware. Many slim USB
-drives accept the command and keep reading at their own minimum, typically
-4-5x; the reference HL-DT-ST GP30NB20 reads at about 4.9x whatever is
-requested. So the backend **measures** the real read throughput right after
-the request (three 1-second READ CD runs) and reports it on the system page:
-`1× confirmed (measured 1.1×)` when the drive obeys, or `1× requested, drive
-reads at 4.9× (speed selection ignored by this drive)` when it does not. The
-journal carries the same line. Playback is unaffected either way; the
-difference is mechanical noise.
-
-At true 1x the drive motor runs at its lowest RPM, eliminating the spin-up
-whine and bearing noise of ripping speeds. Audio is always consumed in real
-time, so there is no high-speed ripping phase in either case: the drive reads
-in short bursts and idles between them.
+The speed a drive actually settles at is decided by its firmware: some go to
+1x, many slim USB drives stay at their own minimum of about 4-5x. The backend
+therefore measures the real read throughput right after the request and
+shows it on the system page as **Minimum read speed** (the reference
+HL-DT-ST GP30NB20 reports 4.2x). Audio is always consumed in real time, so
+the drive reads in short bursts and idles between them at any speed; a lower
+minimum only means less mechanical noise.
 
 mpv's demuxer buffer is capped at **512 KiB** (~3 s of audio). Combined with
 the ALSA and decoder pipeline, the total in-flight buffer is roughly 11 s -

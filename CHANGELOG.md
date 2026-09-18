@@ -21,17 +21,21 @@ Deployed appliances track tagged releases, not the `main` branch HEAD.
 - README screenshots and a playback GIF of the web UI (desktop dark and
   light themes, mobile layout).
 - The backend measures the drive's real CDDA read speed at disc detection
-  (three 1-second READ CD runs after the 1x request) and exposes it as
-  `speed_measured` in `/system/info`. The system page's "Read speed" row
-  now says `1× confirmed (measured N×)`, or `1× requested, drive reads at N×
-  (speed selection ignored by this drive)`, instead of "Supported" whenever
-  the kernel merely accepted the ioctl. The reference HL-DT-ST GP30NB20
-  accepts the request and reads at ~4.9x regardless.
+  (about 3 s of audio read with READ CD right after the 1x request) and
+  exposes it as `speed_measured` in `/system/info`. The system page shows it
+  as **Minimum read speed**, e.g. `4.2×`, instead of "Speed control:
+  Supported" whenever the kernel merely accepted the ioctl. The reference
+  HL-DT-ST GP30NB20 accepts the 1x request and reads at ~4.2x regardless.
+- Persistent, bounded journal on new installs (`install.sh` drops
+  `system/journald-cdpcore.conf` into `/etc/systemd/journald.conf.d/`):
+  64 MiB total, 8 MiB per file, 30 days, compressed, asynchronous writes as
+  before. A reboot no longer erases the log of a hardware fault. Existing
+  appliances: copy the file and run `systemctl restart systemd-journald`.
 
 ### Changed
 
 - The disc-detection log line no longer claims "Drive speed set to 1x" on
-  ioctl acceptance alone; it reports the requested and measured speeds.
+  ioctl acceptance alone; it logs `Drive minimum read speed: N.Nx`.
 - README "Silent play - 1x read speed" rewritten as "Quiet play - lowest read
   speed the drive allows" to match what the appliance can actually
   guarantee.
