@@ -16,6 +16,8 @@ Deployed appliances track tagged releases, not the `main` branch HEAD.
 
 ## [Unreleased]
 
+## [1.4.0] - 2026-09-20
+
 ### Added
 
 - README screenshots and a playback GIF of the web UI (desktop dark and
@@ -36,8 +38,8 @@ Deployed appliances track tagged releases, not the `main` branch HEAD.
 
 - The disc-detection log line no longer claims "Drive speed set to 1x" on
   ioctl acceptance alone; it logs `Drive minimum read speed: N.Nx`.
-- README "Silent play - 1x read speed" rewritten as "Quiet play - lowest read
-  speed the drive allows" to match what the appliance can actually
+- README "Silent play - 1x read speed" rewritten as "Quiet play - the drive's
+  minimum read speed" to match what the appliance can actually
   guarantee.
 
 ## [1.3.2] - 2026-09-18
