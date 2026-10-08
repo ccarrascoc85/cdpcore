@@ -30,6 +30,8 @@ import auth
 import cd_reader
 import metadata
 import player
+import playback_config
+import cdda_source
 from state import CDState, CDPlayerState, TrackInfo, get_state
 
 logging.basicConfig(
@@ -378,11 +380,19 @@ async def startup():
 
     # Register callbacks
     player.setup_player(_on_track_end, _on_disc_error)
+    # A previous unclean exit may have left the drive's retry page changed.
+    await _drive_call_async(_event_loop, "restore factory CDDA retries",
+                            cdda_source.restore_factory_retry, timeout=6.0)
 
     # Start background tasks
     asyncio.create_task(_disc_monitor())
     asyncio.create_task(_state_broadcaster())
     asyncio.create_task(_audio_reconciliation_loop())
+
+
+@app.on_event("shutdown")
+async def shutdown():
+    await asyncio.get_running_loop().run_in_executor(None, player.shutdown)
 
 
 # ---------------------------------------------------------------------------
@@ -626,6 +636,9 @@ async def _disc_monitor():
 def _on_disc_error():
     """Called by player monitor thread when mpv exits due to disc error (ejection, read failure)."""
     state = get_state()
+    if player.get_player_status().get("error") == "drive_stalled":
+        _mark_drive_stalled(state)
+        return
     try:
         player.stop()
     except Exception:
@@ -668,19 +681,20 @@ def _on_track_end(finished_track: int):
     state = get_state()
     if state.state != CDState.PLAYING:
         return
-    next_num = finished_track + 1
-    if state.tracks and next_num <= len(state.tracks):
-        logger.info(f"Track {finished_track} ended → now on track {next_num}")
+    ps = player.get_player_status()
+    if ps.get("state") == "play":
+        next_num = int(ps.get("song", 0)) + 1
+        logger.info(f"Track {finished_track} ended -> now on track {next_num}")
         state.track_number = next_num
-        state.track_title  = state.tracks[next_num - 1].title
-        state.elapsed      = 0
-        # mpv is already playing next_num — no need to call player.play()
+        track = next((t for t in state.tracks if t.number == next_num), None)
+        state.track_title = track.title if track else f"Track {next_num}"
+        state.elapsed = 0
     else:
         logger.info("End of disc reached")
-        state.state        = CDState.LOADED
+        state.state = CDState.LOADED
         state.track_number = 0
-        state.track_title  = None
-        state.elapsed      = 0
+        state.track_title = None
+        state.elapsed = 0
     _schedule_broadcast()
 
 
@@ -724,6 +738,10 @@ def _sync_player_status(state: CDPlayerState):
         return
 
     ps = player.get_player_status()
+    state.read_errors = int(ps.get("read_errors", 0))
+    state.c2_frames = int(ps.get("c2_frames", 0))
+    state.c2_available = ps.get("c2_available")
+    state.read_mode = ps.get("read_mode", "continuous")
     state.buffering = ps.get("buffering", False)
     state.elapsed = int(float(ps.get("elapsed", 0)))
 
@@ -736,11 +754,10 @@ def _sync_player_status(state: CDPlayerState):
     elif ps_state == "stop" and state.state == CDState.PLAYING:
         state.state = CDState.LOADED
 
-    # Update duration from TOC if available
-    if state.track_number and state.tracks:
-        idx = state.track_number - 1
-        if 0 <= idx < len(state.tracks):
-            state.duration = state.tracks[idx].duration
+    # Physical audio track numbers can have gaps where data tracks are omitted.
+    track = next((t for t in state.tracks if t.number == state.track_number), None)
+    if track:
+        state.duration = track.duration
 
 
 def _playback_device_ready() -> tuple[bool, str]:
@@ -797,14 +814,6 @@ def play_from_start():
             _schedule_broadcast()
             return {"ok": True}
 
-        # Pre-spin: wake the drive motor before launching mpv so that
-        # --cdda-speed=1 transitions from an already-spinning disc (fast)
-        # rather than from a cold stop (can take 60+ s on some drives).
-        if not player.drive_busy():
-            try:
-                cd_reader.read_disc_id()
-            except Exception:
-                pass
         # Set state before calling play() — play() blocks during mpv spin-up
         # so polls during that window must already show the correct track.
         state.state        = CDState.PLAYING
@@ -837,11 +846,6 @@ def play_track(track_number: int):
     if not ready:
         raise HTTPException(status_code=409, detail=reason)
     try:
-        if not player.drive_busy():
-            try:
-                cd_reader.read_disc_id()
-            except Exception:
-                pass
         # Set state before calling play() — play() blocks during mpv spin-up
         # so polls during that window must already show the correct track.
         state.state        = CDState.PLAYING
@@ -954,6 +958,8 @@ async def cd_ejected():
 async def _load_disc_metadata():
     """Background task: read TOC + MusicBrainz lookup + cache cover art."""
     state = get_state()
+    state.read_errors = state.c2_frames = 0
+    state.c2_available = None
     state.loading = True
     loop  = asyncio.get_running_loop()
 
@@ -972,6 +978,13 @@ async def _load_disc_metadata():
         state.loading = False
         return
     disc_id, toc, cddb_info = disc_full
+    try:
+        capability = await _drive_call_async(loop, "disc-load C2 probe",
+                                             player.prepare_disc, timeout=10.0)
+        state.c2_available = None if capability is _DRIVE_UNKNOWN else capability
+    except Exception as exc:
+        state.c2_available = None
+        logger.info("Disc-load C2 probe unavailable: %s", exc)
 
     if not disc_id:
         logger.error("Could not read disc ID; proceeding without metadata")
@@ -1377,6 +1390,27 @@ def system_page():
 @app.get("/system/info")
 def system_info_endpoint():
     return system_info.get_system_info()
+
+
+@app.get("/system/playback/config")
+def system_playback_config():
+    return {**playback_config.get_persisted(),
+            "effective_read_mode": playback_config.get_settings()["read_mode"]}
+
+
+@app.post("/system/playback/config")
+def system_playback_save(body: dict):
+    settings = playback_config.save_settings(body)
+    return {"ok": True, **settings,
+            "effective_read_mode": playback_config.get_settings()["read_mode"]}
+
+
+@app.get("/system/playback/status")
+def system_playback_status():
+    state = get_state()
+    _sync_player_status(state)
+    return {"read_errors": state.read_errors, "c2_frames": state.c2_frames,
+            "c2_available": state.c2_available, "read_mode": state.read_mode}
 
 
 @app.post("/system/admin/set_pin")

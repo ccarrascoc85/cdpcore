@@ -163,6 +163,7 @@ body {
 .row-value.amber { color: var(--amber); }
 .row-value.warm  { color: #d07830; }
 .row-value.hot   { color: var(--red); }
+#advanced-playback .row-label { flex-shrink: 1; }
 
 /* ── Bar ─────────────────────────────────────────────────── */
 .bar-wrap {
@@ -450,6 +451,36 @@ html.light .card-title { background: #d0ccc4; }
       </div>
     </div>
 
+    <details class="card" id="advanced-playback">
+      <summary class="card-title" style="cursor:pointer">Advanced playback</summary>
+      <div class="row">
+        <label class="row-label" for="playback-mode">Read mode</label>
+        <select class="btn-action" id="playback-mode">
+          <option value="continuous">Continuous</option>
+          <option value="recovery">Recovery</option>
+        </select>
+      </div>
+      <div class="row">
+        <label class="row-label" for="playback-gap">Gap treatment</label>
+        <select class="btn-action" id="playback-gap">
+          <option value="mirror">Mirror</option>
+          <option value="silence">Silence</option>
+        </select>
+      </div>
+      <div class="row"><span class="row-label">Active mode</span><span class="row-value" id="playback-active">-</span></div>
+      <div class="row"><span class="row-label">Frames muted</span><span class="row-value" id="playback-muted">0</span></div>
+      <div class="row"><span class="row-label">Frames with C2-interpolated samples</span><span class="row-value" id="playback-c2">Not available</span></div>
+      <p style="padding:10px 12px;font-size:11px;color:var(--txt-mid)">
+        Continuous keeps music moving. Recovery waits to recover more audio.
+        Mirror fills short gaps with preceding audio played backwards; silence mutes them.
+        Changes apply at the next track selection or playback start.
+      </p>
+      <div class="actions">
+        <button class="btn-action full" id="playback-save" onclick="savePlayback()">Save playback settings</button>
+      </div>
+      <div class="row"><span class="row-value" id="playback-message" role="status"></span></div>
+    </details>
+
     <!-- Updates -->
     <div class="card">
       <div class="card-title">Updates</div>
@@ -681,6 +712,10 @@ async function refreshAudio() {
     if (!statusResp.ok || !devicesResp.ok) return;
 
     const status = await statusResp.json();
+    document.getElementById('playback-active').textContent = status.read_mode || 'continuous';
+    document.getElementById('playback-muted').textContent = Number(status.read_errors) || 0;
+    document.getElementById('playback-c2').textContent =
+      status.c2_available === true ? (Number(status.c2_frames) || 0) : 'Not available';
     const devices = await devicesResp.json();
     const alsaId = status.alsa_device || '';
     const selected = (devices || []).find(d => d.id === alsaId);
@@ -714,6 +749,40 @@ async function refreshAudio() {
     stateEl.style.color = color;
     document.getElementById('s-audio-name').textContent = sublabel;
   } catch { /* keep last values */ }
+}
+
+async function loadPlayback() {
+  try {
+    const r = await fetch('/system/playback/config');
+    if (!r.ok) throw new Error('Playback settings unavailable');
+    const d = await r.json();
+    document.getElementById('playback-mode').value = d.read_mode;
+    document.getElementById('playback-gap').value = d.gap_treatment;
+    if (d.effective_read_mode !== d.read_mode)
+      document.getElementById('playback-message').textContent = 'Read mode is overridden for this session.';
+  } catch (e) {
+    document.getElementById('playback-message').textContent = e.message;
+  }
+}
+
+async function savePlayback() {
+  const button = document.getElementById('playback-save');
+  const message = document.getElementById('playback-message');
+  button.disabled = true;
+  try {
+    const r = await fetch('/system/playback/config', {
+      method: 'POST', headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({
+        read_mode: document.getElementById('playback-mode').value,
+        gap_treatment: document.getElementById('playback-gap').value
+      })
+    });
+    if (!r.ok) throw new Error('Could not save playback settings');
+    const d = await r.json();
+    message.textContent = d.effective_read_mode !== d.read_mode
+      ? 'Saved. Read mode is overridden for this session.' : 'Saved. Applies to the next playback segment.';
+  } catch (e) { message.textContent = e.message; }
+  finally { button.disabled = false; }
 }
 
 async function refresh() {
@@ -948,6 +1017,7 @@ function toggleLogs() {
 refresh();
 refreshAudio();
 refreshAdmin();
+loadPlayback();
 loadCurrentVersion();
 refreshUpdateStatus();
 if (localStorage.getItem('cdp-logs-open') === '1') setLogsOpen(true);

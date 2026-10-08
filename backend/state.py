@@ -40,6 +40,10 @@ class CDPlayerState:
     loading: bool = False
     buffering: bool = False
     error: Optional[str] = None   # last playback failure reason (e.g. drive_stalled); None when clear
+    read_errors: int = 0
+    c2_frames: int = 0
+    c2_available: Optional[bool] = None
+    read_mode: str = "continuous"
 
     def reset(self):
         self.state = CDState.IDLE
@@ -56,6 +60,8 @@ class CDPlayerState:
         self.loading = False
         self.buffering = False
         self.error = None
+        self.read_errors = self.c2_frames = 0
+        self.c2_available = None
 
     def to_status_dict(self) -> dict:
         return {
@@ -74,6 +80,10 @@ class CDPlayerState:
             "alsa_device": self.alsa_device,
             "audio_state": self.audio_state,
             "error": self.error,
+            "read_errors": self.read_errors,
+            "c2_frames": self.c2_frames,
+            "c2_available": self.c2_available,
+            "read_mode": self.read_mode,
         }
 
 

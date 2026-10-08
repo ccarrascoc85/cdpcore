@@ -8,9 +8,10 @@ Dedicated CD playback appliance for Raspberry Pi.
 
 Audio flows directly from the CD drive to the DAC:
 
-CD drive -> **mpv** -> ALSA -> USB DAC (USB Audio Class compliant DAC)
+CD drive -> **CDPcore reader** -> **mpv (raw PCM)** -> ALSA -> USB DAC (USB Audio Class compliant DAC)
 
-No network transport, no resampling, no intermediate layers or audio middleware.
+Healthy audio stays bit-perfect: s16le, 44.1 kHz, stereo, with no resampling.
+Damaged samples receive bounded CD-player concealment. No network audio transport or audio middleware.
 
 A web UI (served by the backend) provides full playback control from any browser on the local network.
 
@@ -21,7 +22,9 @@ per-session in the Roon Settings -> Extensions panel.
 ```
 CD Drive (/dev/cdrom)
    |
-   v mpv (cdda:///dev/cdrom)
+   v CDPcore CDDA reader (SG_IO READ CD, optional C2 pointers)
+   |
+   v mpv (raw PCM stdin, s16le 44100 Hz stereo)
       IPC: /var/cache/cd-player/mpv.sock
    |
    v ALSA  hw:N,0 (auto-detected)
@@ -53,9 +56,10 @@ avahi-daemon  ->  cdpcore.local  (mDNS hostname + HTTP service announcement)
 
 ## Features
 
-- Bit-perfect CD playback (no resampling, no DSP)
-- Direct CDDA -> ALSA -> USB DAC pipeline
-- Silent 1x drive operation (low noise)
+- Bit-perfect healthy CD playback; damaged samples receive interpolation and gap concealment
+- CDDA reader -> mpv raw PCM -> ALSA -> USB DAC pipeline
+- Continuous or recovery read policy; mirror or silence gap treatment
+- Quiet burst reads at the drive's minimum supported speed
 - Real-time Web UI (WebSocket)
 - Automatic metadata + cover art lookup
 - Roon integration (auto pause/resume)
@@ -70,7 +74,7 @@ avahi-daemon  ->  cdpcore.local  (mDNS hostname + HTTP service announcement)
 
 | Layer | Technology |
 |-------|-----------|
-| CD playback | **mpv** (`cdda://` input, IPC JSON socket control) |
+| CD playback | CDPcore SG_IO READ CD source -> **mpv** raw PCM stdin |
 | Playback control | mpv IPC socket (`/var/cache/cd-player/mpv.sock`) |
 | Backend | **Python 3**, **FastAPI**, **uvicorn** (asyncio) |
 | Disc ID / TOC | **libdiscid** (`python-discid`), cdparanoia fallback |
@@ -90,14 +94,16 @@ avahi-daemon  ->  cdpcore.local  (mDNS hostname + HTTP service announcement)
 
 ### Disc detection
 
-A background asyncio task (`_disc_monitor`) polls the drive via `libdiscid`
-every **5 s** while the drive is idle, and every **15 s** once a disc is
-confirmed loaded (reducing unnecessary disc head seeks). Polling via
-`discid.read()` is suspended while mpv holds the drive open, since concurrent
-reads would compete with mpv for the device. Instead, a **stall watchdog**
-monitors `time-pos` advancement via the IPC socket every few seconds - if
-playback stalls (disc ejected, drive unreadable), it detects the condition
-within ~8 s, kills mpv, and resets state immediately.
+A background asyncio task identifies new discs through libdiscid. Once a disc
+is known, it polls media presence with CDROM_DRIVE_STATUS every 3 s during
+playback and every 0.5 s while stopped. It pauses these polls during a cold
+segment start. Disc-ID reads stay outside playback so they do not compete
+with the CDDA reader.
+
+The reader distinguishes sense-classified media errors from kernel-aborted
+commands. Two consecutive kernel timeouts, or a segment start with no PCM
+and no sense-classified failure within 15 s, report DRIVE ERROR. Media-error
+recovery can wait in recovery mode without being mistaken for a stalled drive.
 
 This handles four scenarios without relying on udev:
 
@@ -127,10 +133,10 @@ HL-DT-ST GP30NB20 reports 4.2x). Audio is always consumed in real time, so
 the drive reads in short bursts and idles between them at any speed; a lower
 minimum only means less mechanical noise.
 
-mpv's demuxer buffer is capped at **512 KiB** (~3 s of audio). Combined with
-the ALSA and decoder pipeline, the total in-flight buffer is roughly 11 s -
-enough to absorb the drive's natural read/idle cycle without audio dropouts,
-while keeping the tail after ejection short.
+mpv uses a 1 s raw-audio cache with a 352,800-byte demuxer limit. The reader
+normally keeps 2 s of lookahead, growing to 20 s when C2 pointers, slow reads
+or failures warn of damage, and returning to 2 s after a clean minute.
+The pipe provides pacing; the drive idles once the bounded queue fills.
 
 Track-to-track seeks cause a brief spin-up as the laser repositions, but the
 drive settles back to its operating speed within a few seconds.
@@ -153,29 +159,54 @@ When a disc is detected, the following cascade runs until metadata is found:
 
 ### Playback (mpv IPC)
 
-mpv is started once per disc (`cdda:///dev/cdrom`) in paused mode. Track navigation
-uses the `chapter` property (CDDA tracks map to mpv chapters, 0-indexed).
-Elapsed time is read from `time-pos` (disc-absolute seconds) and converted to
-track-relative using the cached chapter-start list.
+CDPcore owns the drive through SG_IO READ CD and feeds mpv raw s16le PCM at
+44.1 kHz stereo through stdin. The TOC excludes data tracks. A segment starts
+at the selected track and continues through the remaining audio tracks in one
+PCM stream, so natural boundaries are gapless. The monitor maps mpv's stream
+time-pos through that plan into track number and elapsed time. It fires
+on_track_end once per natural boundary and at disc EOF. Position uses a
+monotonic fallback only until time-pos becomes available.
 
-**Time position fallback hierarchy:**
-1. **Primary:** Chapter-list cached from mpv (actual disc TOC sectors) - most accurate, available after ~8 s
-2. **Secondary:** TOC-based cumulative track durations - available immediately, <1 s error
-3. **Tertiary:** Monotonic timer - used when IPC is unavailable; frozen during mpv spin-up
+Pause and resume use mpv's pause property. A paused player fills its bounded
+pipe/lookahead and then the reader idles. Explicit track selections, Next and
+Prev replace the segment and mpv process. Requests before first PCM are queued;
+the latest selection wins. Stop and eject detach immediately while background
+teardown waits for the current read and restores factory drive retries.
 
-**Startup sequence for first play:**
-1. mpv process starts (`--pause` flag, whole disc as `cdda:///dev/cdrom`)
-2. Backend waits for IPC socket to appear (~1-2 s)
-3. Backend polls until mpv has read the CDDA TOC (`chapter` property non-null, up to 60 s)
-4. If a specific track was requested, `set_property chapter N` is sent before unpausing
-5. `buffering=true` is set while mpv spins up; the VFD displays **STARTING**
-6. Chapter-list is cached in background (up to 10 retries over 10 s) for precise elapsed time
+**Advanced playback** on the system page is collapsed by default and admin-gated.
+Settings persist in playback.conf beside auth.conf in the backend config directory
+(CDPCORE_CONFIG_DIR, default ~/.config/cdpcore-backend), taking effect at the next
+segment start:
 
-**Track seek correctness:**
-The monitor thread only fires `_on_track_end` for **sequential** chapter advances
-(`new == prev + 1`). User-initiated seeks jump arbitrary chapters and are handled
-exclusively by `play()` updating `_current_track` before sending the IPC command -
-preventing any monitor event from overwriting state during a seek.
+- **Continuous** (default): 8 internal drive retries; a failed chunk is walked
+  frame by frame, and after a failed frame the frame four ahead is probed: if it
+  fails too, the frames in between are treated as one burst, otherwise each is
+  tried once. Below a 1.5 s lookahead reserve, remaining unattempted frames are
+  muted so playback never pauses.
+- **Recovery**: 128 retries, a group/overlap/single-frame salvage ladder,
+  with frame-exact edge refinement for inferred dead bands. Playback may wait.
+- **Mirror** (default): full-level reversed preceding audio fills gaps of up to
+  eight frames; longer gaps become silence. **Silence** always uses digital
+  silence. Both use 8 ms raised-cosine edge fades and one guard frame on each
+  side of unreadable runs.
+- C2-flagged samples are interpolated linearly per channel. Drives rejecting
+  C2 fall back to PCM-only READ CD, showing **Not available** for C2 counters.
+
+The system page shows active mode, frames muted and frames with C2-interpolated
+samples. The listening page shows READ ERR n next to PLAYING only when this
+segment has muted frames; selecting a new segment clears the count.
+
+Development overrides: CDPCORE_READ_MODE=continuous|recovery wins over persisted
+read mode. CDPCORE_CDDA_INJECT_FAIL=LBA_FROM:LBA_TO[:COST_S] injects a failing
+half-open LBA range (default cost 0.3 s); it is disabled unless explicitly set.
+The shipped READ CD timeout is 8000 ms. Factory retry count 128 is restored on
+startup, stop, eject, reader exceptions and shutdown. Device and sysfs queue
+resolution use /dev/cdrom, including after USB re-enumeration.
+
+Existing appliances must refresh system/cdpcore-backend.service (or reinstall)
+and reload systemd before saving playback settings: the unit grants a narrow
+writable exception for /home/cdplayer/.config/cdpcore-backend. A custom
+CDPCORE_CONFIG_DIR must likewise be writable under the service sandbox.
 
 ### State machine
 
@@ -584,7 +615,7 @@ CDPcore exposes a REST API and WebSocket interface, enabling integration with ex
 | POST | `/pause` | Toggle pause/resume |
 | POST | `/stop` | Stop playback |
 | POST | `/next` | Next track |
-| POST | `/prev` | Previous track (< 5 s -> restart current; >= 5 s -> previous track) |
+| POST | `/prev` | Previous track within 5 s; restart current track after 5 s |
 | POST | `/eject` | Stop and eject disc |
 | GET | `/cover` | Cover art image (JPEG, cached locally) |
 | GET | `/devices` | List ALSA devices with auto-selection info |
@@ -596,6 +627,9 @@ CDPcore exposes a REST API and WebSocket interface, enabling integration with ex
 | GET | `/health` | Health check |
 | GET | `/system` | System management page (HTML shell - open; its data endpoints are gated) |
 | GET | `/system/info` | System metrics JSON (CPU, memory, disk, network, services) - admin-gated |
+| GET | `/system/playback/config` | Persisted read mode and gap treatment, plus effective read mode - admin-gated |
+| POST | `/system/playback/config` | Save read_mode (continuous/recovery) and/or gap_treatment (mirror/silence); next segment - admin-gated |
+| GET | `/system/playback/status` | Live muted/C2 frame counters, C2 availability and active mode - admin-gated |
 | GET | `/system/logs` | Last N lines of the backend service journal (`?n=150`) - admin-gated |
 | POST | `/system/action` | Execute system action (`restart_backend`, `restart_extension`, `restart_all`, `reboot`, `poweroff`, `roon_bridge_start`, `roon_bridge_stop`, `roon_bridge_restart`, `roon_bridge_enable`, `roon_bridge_disable`) - admin-gated |
 | GET | `/system/update/check` | Check the latest tagged GitHub Release - admin-gated |
@@ -630,14 +664,22 @@ CDPcore exposes a REST API and WebSocket interface, enabling integration with ex
   "buffering":    false,
   "alsa_device":  "hw:1,0",
   "audio_state":  "usb_single",
+  "read_errors":  0,
+  "c2_frames":    0,
+  "c2_available": true,
+  "read_mode":    "continuous",
   "error":        null
 }
 ```
 
+- `read_errors` - frames treated as unreadable in this segment, including guard frames; zero when clean
+- `c2_frames` - frames carrying C2-flagged bytes, counted separately from muted frames
+- `c2_available` - true when the drive supports C2, false when unavailable, null until probed
+- `read_mode` - active continuous or recovery policy
 - `loading` - `true` while metadata is being fetched (VFD shows READING)
 - `buffering` - `true` while mpv is spinning up before first audio output (VFD shows STARTING)
 - `alsa_device` - currently selected ALSA device id used by the next playback start
-- `error` - `null`, or `drive_stalled` when the last play attempt failed because the optical drive stopped answering while mpv opened the disc (the status line shows DRIVE ERROR; state returns to `loaded`, cleared on the next play attempt or disc change)
+- `error` - `null`, or `drive_stalled` when the last play attempt failed because the optical drive stopped answering during bounded CDDA reads (the status line shows DRIVE ERROR; state returns to `loaded`, cleared on the next play attempt or disc change)
 - `audio_state` - one of `usb_single`, `usb_multiple`, `no_usb`, `device_missing`, `default`. `/play` and `/play/{n}` return HTTP 409 when the state is `device_missing`, `no_usb`, or `usb_multiple` with `alsa_device` no longer in the device list. The appliance requires a valid USB DAC for playback; there is no fallback to the Pi internal audio output
 
 ---
@@ -652,7 +694,9 @@ cdpcore/
 |   |-- cd_reader.py         libdiscid TOC reading, ALSA device enumeration
 |   |-- metadata.py          MusicBrainz / GnuDB lookup + cover art caching
 |   |-- network.py           Network configuration helpers
-|   |-- player.py            mpv process lifecycle + IPC socket control
+|   |-- player.py            Raw PCM segments, mpv process lifecycle + IPC control
+|   |-- cdda_source.py       TOC, SG_IO, salvage, adaptive lookahead and concealment
+|   |-- playback_config.py   Persistent playback policy
 |   |-- state.py             In-memory state machine (IDLE/LOADED/PLAYING/PAUSED)
 |   |-- system_info.py       System metrics (CPU, memory, disk, network, services)
 |   |-- admin_gate.js        Frontend admin-session gate for appliance pages

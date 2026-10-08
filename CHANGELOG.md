@@ -16,6 +16,51 @@ Deployed appliances track tagged releases, not the `main` branch HEAD.
 
 ## [Unreleased]
 
+### Changed
+
+- CDPcore reads CDDA through bounded SG_IO READ CD commands and streams
+  s16le 44.1 kHz stereo PCM to mpv, replacing the CDDA/paranoia input.
+  Natural track boundaries share one stream; explicit selections restart
+  a segment. Continuous playback (the default) never pauses: it uses an
+  adaptive 2-20 s lookahead and a frame walker on damaged chunks (on a
+  failed frame it probes four frames ahead and treats a confirmed burst as
+  unreadable without one attempt per frame). Recovery mode uses the full
+  salvage ladder and frame-exact dead-band edge refinement, and playback
+  waits as long as needed.
+- Healthy discs start playing in about 2-3 s instead of 9-16 s: there is no
+  open-time track scan and no spin-up wait inside mpv.
+- Damaged samples receive per-channel C2 interpolation and mirror or silence
+  gap concealment, with 8 ms fades and one guard frame on either side.
+  Healthy audio remains bit-perfect. Drive retries are restored to factory
+  128 on startup, stop, eject, exceptions and shutdown.
+- Drive stalls are distinguished from unreadable sectors; two consecutive
+  kernel-aborted reads or a start without PCM or classified media errors
+  within 15 s report DRIVE ERROR.
+
+### Added
+
+- Segment frame counters in /status: read_errors, c2_frames, c2_available
+  and active read_mode, plus a READ ERR n marker beside PLAYING.
+- Collapsed Advanced playback settings on the system page, persisted in
+  playback.conf: continuous/recovery read mode and mirror/silence gap
+  treatment (defaults continuous + mirror), applied at the next segment.
+  Live counters distinguish muted frames from C2-interpolated frames.
+- Admin-gated /system/playback/config read/write and
+  /system/playback/status endpoints; CDPCORE_READ_MODE development override
+  and CDPCORE_CDDA_INJECT_FAIL fault injection.
+
+### Fixed
+
+- A scratched disc no longer stops playback. With the previous engine a
+  damaged track could not be entered at all (the open-time scan and kernel
+  retries held the drive); it now plays through, with unreadable frames
+  concealed.
+- Cover art from Cover Art Archive uses the 1200 px thumbnail (500 px and the
+  original as fallbacks) instead of the original upload, which can be a scan
+  of 20 MB or more that a phone browser never finishes showing. Cached covers
+  larger than 2 MiB are fetched again in the smaller size when the disc
+  loads.
+
 ## [1.4.0] - 2026-09-20
 
 ### Added

@@ -1,551 +1,415 @@
-"""
-CD playback via mpv with IPC socket (real-time, no ripping).
-
-One mpv process per disc:
-  mpv --cdda-device=CDROM --no-video --ao=alsa cdda://
-
-Track navigation via IPC JSON commands:
-  set_property chapter N   (0-indexed: chapter 0 = track 1)
-
-Pause/resume via IPC:
-  set_property pause true/false
-
-Elapsed time via IPC:
-  get_property time-pos     (seconds within current chapter/track)
-
-Auto-advance: mpv advances chapters automatically; a monitor thread watches
-for chapter-change events and fires on_track_end for state updates.
-When the disc ends (end-file event), on_track_end fires for the last track.
-"""
+"""CDDA segments streamed into mpv's raw PCM stdin; control through JSON IPC."""
+import atexit
 import json
 import logging
 import os
-import signal
 import socket
 import subprocess
 import threading
 import time
 from pathlib import Path
-from typing import Optional, Callable
+from typing import Callable, Optional
+
+from cdda_source import Drive, DriveTimeout, Lookahead, PipeWriter, SalvageReader, Toc, FPS
 
 logger = logging.getLogger(__name__)
-
-CDROM_DEVICE = os.environ.get("CDROM_DEVICE", "/dev/cdrom")
-ALSA_DEVICE  = os.environ.get("ALSA_DEVICE",  "hw:0,0")
-_IPC_SOCK    = Path(os.environ.get("CD_CACHE_DIR", "/var/cache/cd-player")) / "mpv.sock"
-
-
-def _aplay_device(hw_device: str) -> str:
-    if hw_device.startswith("hw:"):
-        return "plughw:" + hw_device[3:]
-    return hw_device
+CDROM_DEVICE = "/dev/cdrom"
+ALSA_DEVICE = os.environ.get("ALSA_DEVICE", "hw:0,0")
+_IPC_SOCK = Path(os.environ.get("CD_CACHE_DIR", "/var/cache/cd-player")) / "mpv.sock"
+COLD_START_TOC_TIMEOUT = 15.0
 
 
-# Cold start: how long to wait for mpv to read the CDDA TOC before declaring
-# the drive stalled. A healthy drive answers in ~2-8 s; some take 60 s from a
-# cold stop. Past this, the drive is wedged and mpv will never produce audio.
-COLD_START_TOC_TIMEOUT = 60.0
+def _aplay_device(hw_device):
+    return "plughw:" + hw_device[3:] if hw_device.startswith("hw:") else hw_device
 
 
 class DriveStallError(RuntimeError):
-    """mpv could not read the disc TOC in time: the optical drive is not answering."""
+    """The optical drive stopped answering bounded read commands."""
 
 
 class CDPlayer:
-    """mpv-based real-time CD player with IPC control.
-
-    Locking rule: self._lock guards in-memory state fields only. Never hold it
-    across process, IPC, or drive I/O; teardown can wedge in kernel D-state.
-    """
-
+    """Locks cover state only; device I/O and teardown run off request locks."""
     def __init__(self):
-        self._mpv_proc:      Optional[subprocess.Popen] = None
-        self._ipc_sock:      Optional[socket.socket]    = None
-        self._ipc_lock       = threading.Lock()
-        self._current_track: int   = 0
-        self._total_tracks:  int   = 0
-        self._paused:        bool  = False
-        self._timer_paused:  bool  = False
-        self._seek_timer_pending: bool = False
-        self._seek_sync_pos: Optional[float] = None
-        self._seek_pending_deadline: float = 0.0   # free-run if anchor never arrives
-        self._cold_anchor: bool = False   # cold start: anchor to first real time-pos
-        self._resync_suppressed_until: float = 0.0
-        self._track_elapsed: float = 0.0   # fallback timer
-        self._track_start:   float = 0.0
-        self._lock           = threading.Lock()
-        self._start_lock     = threading.Lock()
-        self._on_track_end:  Optional[Callable[[int], None]] = None
-        self._on_disc_error: Optional[Callable[[], None]]    = None
-        # chapter-list start times (disc-absolute seconds) cached at mpv startup
-        self._chapter_starts: list = []
-        # True between play() call and first valid IPC time-pos (mpv spinning up)
-        self._starting: bool = False
-        # True from mpv spawn until the cold-start path has issued its chapter
-        # seek + unpause. While set, play(N) only re-targets _current_track (the
-        # queued track; last request wins) instead of sending IPC commands to a
-        # socket that has not read the TOC yet.
-        self._cold_start_pending: bool = False
-        self._mpv_generation: int = 0
-        self._teardown_generations: set[int] = set()
+        self._lock = threading.RLock()
+        self._start_lock = threading.RLock()
+        self._ipc_lock = threading.Lock()
+        self._ipc_sock = self._mpv_proc = None
+        self._reader = self._writer = self._lookahead = None
+        self._toc, self._plan = None, []
+        self._current_track = self._total_tracks = 0
+        self._paused = self._starting = self._cold_start_pending = False
+        self._mpv_generation = self._request_revision = 0
+        self._track_elapsed = self._track_start = self._segment_started = 0.0
+        self._last_pos = self._startup_error = None
+        self._on_track_end = self._on_disc_error = None
+        self._cleanup_done = threading.Event()
+        self._cleanup_done.set()
+        self._mode, self._gap_treatment = "continuous", "mirror"
+        self._disc_c2 = None
 
-    def set_on_track_end(self, callback: Callable[[int], None]):
+    def set_on_track_end(self, callback):
         self._on_track_end = callback
 
-    def set_on_disc_error(self, callback: Callable[[], None]):
+    def set_on_disc_error(self, callback):
         self._on_disc_error = callback
 
-    # ------------------------------------------------------------------
-    # Public controls
-    # ------------------------------------------------------------------
+    def _settings(self):
+        try:
+            from playback_config import get_settings
+            return get_settings()
+        except ImportError:
+            mode = os.environ.get("CDPCORE_READ_MODE", "continuous")
+            return {"read_mode": mode if mode in ("continuous", "recovery") else "continuous",
+                    "gap_treatment": "mirror"}
 
-    def play(self, track_number: int, total_tracks: int,
-             cdrom_device: str = CDROM_DEVICE,
-             alsa_device:  str = ALSA_DEVICE,
-             seek_to_sec: float = 0.0):
+    def prepare_disc(self):
+        """Probe C2 at disc load; each segment still reads its authoritative TOC."""
+        self._disc_c2 = None
+        toc = Toc.read(CDROM_DEVICE)
+        tracks = toc.audio_tracks()
+        if not tracks:
+            return None
+        first = tracks[0]
+        probe_lba = min(first.start_lba + 150, first.end_lba - 1)
+        drive = Drive(CDROM_DEVICE, probe_lba=probe_lba)
+        try:
+            self._disc_c2 = drive.c2 if drive.probe_error is None or not drive.c2 else None
+            return self._disc_c2
+        finally:
+            drive.close()
+
+    def play(self, track_number, total_tracks, cdrom_device=CDROM_DEVICE,
+             alsa_device=ALSA_DEVICE, seek_to_sec=0.0):
         with self._start_lock:
             with self._lock:
-                mpv_running = self._mpv_running()
-
-            if not mpv_running:
-                proc = self._spawn_mpv(cdrom_device, alsa_device)
-                with self._lock:
-                    self._mpv_generation += 1
-                    generation = self._mpv_generation
-                    self._mpv_proc = proc
-                    self._starting = True
-                    self._cold_start_pending = True
-                logger.info(f"mpv started (pid={proc.pid})")
-                threading.Thread(
-                    target=self._monitor_mpv,
-                    args=(generation,),
-                    daemon=True,
-                ).start()
-
+                if self._cold_start_pending:
+                    self._current_track, self._total_tracks = track_number, total_tracks
+                    self._request_revision += 1
+                    logger.info("cdda: queued track %s while segment starts", track_number)
+                    return
+            self._stop_mpv()
             with self._lock:
-                self._current_track = track_number
-                self._total_tracks  = total_tracks
-                self._paused        = False
-                self._timer_paused  = False
-                self._seek_timer_pending = False
-                self._seek_sync_pos = None
-                self._resync_suppressed_until = 0.0
-                self._track_elapsed = 0.0
-                self._track_start   = time.monotonic()
-                queued = mpv_running and self._cold_start_pending
-
-        if queued:
-            # mpv is still spinning up under another play() call. That call
-            # reads _current_track once the TOC is available and seeks there,
-            # so the latest requested track wins without touching IPC now.
-            logger.info(f"Queued track {track_number}/{total_tracks} (mpv still starting)")
-            return
-
-        if not mpv_running:
-            # Wait for IPC socket, then wait until mpv has read the CDDA TOC
-            # (chapter property becomes non-None), then seek to the target track.
-            self._wait_for_ipc(timeout=10)
-            deadline = time.monotonic() + COLD_START_TOC_TIMEOUT
-            toc_ready = False
-            while time.monotonic() < deadline:
-                if self._ipc_query("chapter") is not None:
-                    toc_ready = True
-                    break
-                if self.is_stopped():
-                    with self._lock:
-                        self._cold_start_pending = False
-                    return  # stop() was called while waiting — abort
-                time.sleep(0.5)
-            if not toc_ready:
-                # The drive never answered mpv's TOC read. Unpausing now would
-                # only show PLAYING with a frozen counter; tear mpv down and
-                # report the stall so the UI and the caller see a real reason.
-                logger.error(
-                    f"Drive stalled: no TOC from mpv within {COLD_START_TOC_TIMEOUT:.0f}s "
-                    f"(track {track_number}); tearing mpv down"
-                )
-                with self._lock:
-                    self._cold_start_pending = False
+                self._mpv_generation += 1
+                generation = self._mpv_generation
+                self._request_revision += 1
+                self._current_track, self._total_tracks = track_number, total_tracks
+                self._paused, self._starting, self._cold_start_pending = False, True, True
+                self._startup_error, self._last_pos = None, None
+                self._track_start, self._track_elapsed = time.monotonic(), 0.0
+                self._segment_started = self._track_start
+            threading.Thread(target=self._start_segment, args=(generation, cdrom_device, alsa_device),
+                             daemon=True, name="cdda-start").start()
+        deadline = time.monotonic() + COLD_START_TOC_TIMEOUT
+        while True:
+            with self._lock:
+                if generation != self._mpv_generation:
+                    return
+                reader, pending = self._reader, self._cold_start_pending
+                error = self._startup_error or (reader.error if reader else None)
+            if error:
+                self.stop()
+                if isinstance(error, DriveTimeout):
+                    raise DriveStallError("drive_stalled") from error
+                raise error
+            if not pending:
+                return
+            if reader and reader.sense_failure.is_set():
+                return  # recovery work has no playback deadline
+            if time.monotonic() >= deadline:
+                logger.error("Drive stalled: no PCM or sense failure within %.0fs", COLD_START_TOC_TIMEOUT)
                 self.stop()
                 raise DriveStallError("drive_stalled")
-            with self._lock:
-                # A play(N) issued during spin-up re-targeted _current_track;
-                # start from that track, not the one this call was given.
-                track_number = self._current_track or track_number
-                self._cold_start_pending = False
-            if track_number > 1:
-                self._ipc_send(["set_property", "chapter", track_number - 1])
-            threading.Thread(
-                target=self._cache_chapter_list_bg,
-                args=(generation,),
-                daemon=True,
-            ).start()
-            self._ipc_send(["set_property", "pause", False])
-            with self._lock:
-                # Hold elapsed at 0 until mpv's real time-pos starts advancing,
-                # then anchor to it — so the counter begins exactly with the audio
-                # instead of from the unpause moment, which can lead the audio by
-                # ~1 s on a slow drive and cause a one-time catch-up skip.
-                now = time.monotonic()
-                self._track_elapsed = 0.0
-                self._track_start = now
-                self._timer_paused = True
-                self._seek_timer_pending = True
-                self._seek_sync_pos = None
-                self._seek_pending_deadline = now + 5.0
-                self._resync_suppressed_until = 0.0
-                self._cold_anchor = True
-                self._starting = False
-            logger.info(f"Playing track {track_number}/{total_tracks}")
-            return
+            time.sleep(0.02)
 
-        # mpv already running — jump to the requested chapter via IPC.
-        # set_property chapter N is a no-op when already on chapter N
-        # (e.g. restarting the current track), so an explicit seek is needed then.
-        current_chapter = self._ipc_query("chapter")
-        if current_chapter is not None and current_chapter != track_number - 1:
+    def _start_segment(self, generation, device, alsa_device):
+        try:
+            # Old SG_IO and factory restore must complete before new retry policy.
+            while not self._cleanup_done.wait(0.05):
+                with self._lock:
+                    if generation != self._mpv_generation:
+                        return
+            toc = Toc.read(device)
+            while True:
+                with self._lock:
+                    if generation != self._mpv_generation:
+                        return
+                    target, revision = self._current_track, self._request_revision
+                plan, settings = toc.plan_from(target), self._settings()
+                la = Lookahead()
+                extra = {"c2_supported": self._disc_c2} if self._disc_c2 is not None else {}
+                reader = SalvageReader(device, plan, la, mode=settings["read_mode"],
+                                       gap_treatment=settings["gap_treatment"], **extra)
+                proc = self._spawn_mpv(device, alsa_device)
+                writer = PipeWriter(la, proc.stdin)
+                with self._lock:
+                    stale = generation != self._mpv_generation or revision != self._request_revision
+                    if not stale:
+                        self._mpv_proc, self._reader, self._writer, self._lookahead = proc, reader, writer, la
+                        self._toc, self._plan = toc, plan
+                        self._mode, self._gap_treatment = settings["read_mode"], settings["gap_treatment"]
+                        reader.start()
+                if stale:
+                    proc.stdin.close()
+                    proc.terminate()
+                    proc.wait(timeout=3)
+                    continue
+                while not reader.first_pcm.wait(0.02):
+                    with self._lock:
+                        stale = generation != self._mpv_generation or revision != self._request_revision
+                    if stale or reader.error or reader.finished.is_set():
+                        break
+                with self._lock:
+                    stale = generation != self._mpv_generation or revision != self._request_revision
+                    if not stale and reader.first_pcm.is_set() and not reader.error:
+                        self._cold_start_pending = False
+                if stale:
+                    reader.stop()
+                    proc.terminate()
+                    reader.join()
+                    proc.stdin.close()
+                    proc.wait(timeout=3)
+                    with self._lock:
+                        if generation != self._mpv_generation:
+                            return
+                        self._reader = self._writer = self._mpv_proc = None
+                    continue
+                if reader.error:
+                    raise reader.error
+                with self._lock:
+                    if generation != self._mpv_generation:
+                        return
+                    writer.start()
+                    threading.Thread(target=self._monitor_mpv, args=(generation,), daemon=True,
+                                     name="cdda-monitor").start()
+                return
+        except Exception as exc:
             with self._lock:
-                self._track_elapsed = 0.0
-                self._track_start = time.monotonic()
-                self._timer_paused = True
-                self._seek_timer_pending = True
-                self._seek_sync_pos = None
-                self._cold_anchor = False
-                self._resync_suppressed_until = time.monotonic() + 8.0
-        self._ipc_send(["set_property", "chapter", track_number - 1])
-        if current_chapter == track_number - 1:
-            # Same-chapter restart: use the cached TOC start time + 150 ms clearance
-            # to land clearly inside the chapter boundary.
-            idx = track_number - 1
-            if idx < len(self._chapter_starts):
-                start_time = self._chapter_starts[idx] + 0.15
-            else:
-                start_time = seek_to_sec + 1.0
-            self._ipc_send(["seek", start_time, "absolute"])
-            with self._lock:
-                self._track_elapsed = 0.0
-                self._track_start = time.monotonic()
-                self._timer_paused = True
-                self._seek_timer_pending = True
-                self._seek_sync_pos = None
-                self._cold_anchor = False
-                self._resync_suppressed_until = time.monotonic() + 8.0
-        self._ipc_send(["set_property", "pause", False])
-        logger.info(f"Playing track {track_number}/{total_tracks}")
+                if generation == self._mpv_generation:
+                    self._startup_error = exc
 
     def pause(self):
         with self._lock:
-            if self._paused or not self._mpv_running():
+            if self._paused or not self.drive_busy:
                 return
-            now = time.monotonic()
-            if not self._timer_paused:
-                self._track_elapsed = self._track_elapsed + (now - self._track_start)
-                self._timer_paused = True
             self._paused = True
         self._ipc_send(["set_property", "pause", True])
-        logger.info("Paused")
 
     def resume(self):
         with self._lock:
-            if not self._paused or not self._mpv_running():
+            if not self._paused or not self.drive_busy:
                 return
-            self._track_start = time.monotonic()
-            self._timer_paused = False
             self._paused = False
+            self._track_start = time.monotonic()
         self._ipc_send(["set_property", "pause", False])
-        logger.info("Resumed")
 
     def stop(self):
         with self._start_lock:
             self._stop_mpv()
-        logger.info("Stopped")
-
-    # ------------------------------------------------------------------
-    # State queries
-    # ------------------------------------------------------------------
 
     @property
-    def cold_start_pending(self) -> bool:
-        """True while mpv is opening the drive and reading the TOC (cold start)."""
+    def cold_start_pending(self):
         with self._lock:
             return self._cold_start_pending
 
     @property
-    def drive_busy(self) -> bool:
-        """True whenever mpv holds the CD device open (playing, paused, or spinning up)."""
+    def drive_busy(self):
         with self._lock:
-            return self._mpv_running()
+            return self._cold_start_pending or self._mpv_running()
 
-    def is_playing(self) -> bool:
-        with self._lock:
-            return self._mpv_running() and not self._paused
+    def is_playing(self):
+        return self.drive_busy and not self.is_paused()
 
-    def is_paused(self) -> bool:
+    def is_paused(self):
         with self._lock:
             return self._paused and self._mpv_running()
 
-    def is_stopped(self) -> bool:
-        with self._lock:
-            return not self._mpv_running() and not self._paused
+    def is_stopped(self):
+        return not self.drive_busy
 
-    def get_elapsed(self) -> float:
-        """Elapsed seconds within the current track.
-
-        mpv CDDA reports time-pos as disc-absolute seconds (from disc start),
-        not track-relative.  We subtract the chapter start time to convert.
-
-        Priority:
-          1. Cached mpv chapter-list start (most accurate, from actual TOC sectors)
-          2. MusicBrainz cumulative durations (< 1s error, available immediately)
-          3. Monotonic timer fallback (when IPC is unavailable)
-        """
-        pos = self._ipc_get_time_pos()
-        if pos is not None:
-            self._starting = False  # mpv is producing real position data
-            idx = self._current_track - 1
-            if 0 <= idx < len(self._chapter_starts):
-                return max(0.0, pos - self._chapter_starts[idx])
-            # IPC works but chapter-list not cached yet — fall back to MusicBrainz
-            # cumulative durations (off by < 1 s vs actual sector boundary)
-            try:
-                from state import get_state
-                tracks = get_state().tracks
-                if tracks and 0 <= idx < len(tracks):
-                    mb_start = float(sum(t.duration for t in tracks[:idx]))
-                    return max(0.0, pos - mb_start)
-            except Exception:
-                pass
-            return pos
-        if self._starting:
-            return 0.0  # freeze elapsed at 0 while mpv is spinning up
-        return self._get_timer_elapsed()
-
-    def _get_timer_elapsed(self) -> float:
-        """Track-relative elapsed time from monotonic timer (no IPC)."""
-        with self._lock:
-            if self._starting:
-                return 0.0
-            if self._timer_paused:
-                return self._track_elapsed
-            return self._track_elapsed + (time.monotonic() - self._track_start)
-
-    def current_track(self) -> int:
+    def current_track(self):
         with self._lock:
             return self._current_track
 
-    def get_status(self) -> dict:
+    def _get_timer_elapsed(self):
         with self._lock:
-            running = self._mpv_proc is not None
-            paused  = self._paused
-            song    = max(0, self._current_track - 1)
-            # A track-change seek counts as "buffering": the new track has no
-            # live audio position yet, so the UI shows a steady 0:00 (its
-            # interpolation ticker is gated on this flag) and the VFD shows
-            # STARTING — same as a cold spin-up. Avoids a 0 -> 0:01 -> 0 flap.
-            buffering = self._starting or self._seek_timer_pending
-            if buffering:
-                elapsed = 0.0
-            elif self._timer_paused:
-                elapsed = self._track_elapsed
-            elif running:
-                elapsed = self._track_elapsed + (time.monotonic() - self._track_start)
-            else:
-                elapsed = 0.0
+            if self._starting:
+                return 0.0
+            return self._track_elapsed if self._paused else self._track_elapsed + time.monotonic() - self._track_start
 
-        if paused:
-            state = "pause"
-        elif running:
-            state = "play"
-        else:
-            state = "stop"
+    def _accept_position(self, generation, pos):
+        callbacks = []
+        with self._lock:
+            if generation != self._mpv_generation or not self._plan:
+                return
+            track, elapsed = Toc.locate(self._plan, max(0, float(pos) * FPS))
+            previous = self._current_track
+            if track != previous and previous:
+                numbers = [s.track for s in self._plan]
+                if previous in numbers and track in numbers:
+                    callbacks = numbers[numbers.index(previous):numbers.index(track)]
+            self._current_track = track
+            self._track_elapsed, self._track_start = elapsed, time.monotonic()
+            self._last_pos = pos
+            if pos > 0:
+                if self._starting:
+                    logger.info("cdda: first audio after %.2fs", time.monotonic() - self._segment_started)
+                self._starting, self._cold_start_pending = False, False
+        for previous in callbacks:
+            if self._on_track_end:
+                self._on_track_end(previous)
 
-        return {
-            "state":     state,
-            "elapsed":   str(elapsed),
-            "song":      str(song),
-            "duration":  "0",
-            "buffering": buffering,
-        }
+    def get_elapsed(self):
+        with self._lock:
+            return self._track_elapsed if self._last_pos is not None else self._get_timer_elapsed()
 
-    # ------------------------------------------------------------------
-    # Internal: mpv lifecycle
-    # ------------------------------------------------------------------
+    def get_status(self):
+        with self._lock:
+            running, paused, reader = self.drive_busy, self._paused, self._reader
+            stats = reader.snapshot() if reader else {}
+            return {"state": "pause" if paused else "play" if running else "stop",
+                    "elapsed": str(self.get_elapsed() if running else 0.0),
+                    "song": str(max(0, self._current_track - 1)), "duration": "0",
+                    "buffering": self._starting and not (reader and reader.sense_failure.is_set()),
+                    "read_errors": stats.get("unreadable_frames", 0),
+                    "c2_frames": stats.get("c2_frames", 0),
+                    "c2_available": reader.c2_available if reader else None,
+                    "read_mode": self._mode, "gap_treatment": self._gap_treatment,
+                    "error": "drive_stalled" if isinstance(self._startup_error, DriveStallError) else None}
 
-    def _mpv_running(self) -> bool:
-        """True if mpv process is alive. Must hold self._lock."""
+    def _mpv_running(self):
         return self._mpv_proc is not None and self._mpv_proc.poll() is None
 
     @staticmethod
-    def _proc_running(proc: Optional[subprocess.Popen]) -> bool:
+    def _proc_running(proc):
         return proc is not None and proc.poll() is None
 
-    def _spawn_mpv(self, cdrom_device: str, alsa_device: str) -> subprocess.Popen:
-        """Start mpv process without holding self._lock."""
-        try:
-            _IPC_SOCK.unlink(missing_ok=True)
-        except Exception:
-            pass
-
-        cmd = [
-            "mpv",
-            "--no-video",
-            "--ao=alsa",
-            f"--audio-device=alsa/{_aplay_device(alsa_device)}",
-            f"--input-ipc-server={_IPC_SOCK}",
-            "--really-quiet",
-            "--pause",
-            "--demuxer-max-bytes=512KiB",
-            f"cdda://{cdrom_device}",
-        ]
-        return subprocess.Popen(
-            cmd,
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL,
-        )
+    def _spawn_mpv(self, cdrom_device, alsa_device):
+        _IPC_SOCK.parent.mkdir(parents=True, exist_ok=True)
+        _IPC_SOCK.unlink(missing_ok=True)
+        cmd = ["mpv", "--no-video", "--ao=alsa", f"--audio-device=alsa/{_aplay_device(alsa_device)}",
+               "--demuxer=rawaudio", "--demuxer-rawaudio-format=s16le", "--demuxer-rawaudio-rate=44100",
+               "--demuxer-rawaudio-channels=2", "--demuxer-max-bytes=352800", "--demuxer-max-back-bytes=0",
+               "--cache=yes", "--cache-secs=1", f"--input-ipc-server={_IPC_SOCK}", "--really-quiet", "-"]
+        return subprocess.Popen(cmd, stdin=subprocess.PIPE, stdout=subprocess.DEVNULL,
+                                stderr=subprocess.DEVNULL, bufsize=0)
 
     def _stop_mpv(self):
-        """Detach mpv state quickly and tear the process down in the background."""
-        proc, generation, ipc_sock = self._detach_mpv_for_teardown()
-        if proc is None:
-            return
-        threading.Thread(
-            target=self._teardown_mpv_bg,
-            args=(proc, generation, ipc_sock),
-            daemon=True,
-        ).start()
-
-    def _detach_mpv_for_teardown(self):
         with self._lock:
-            proc = self._mpv_proc
+            proc, reader, writer = self._mpv_proc, self._reader, self._writer
             generation = self._mpv_generation
-
-            self._mpv_proc = None
+            self._mpv_generation += 1
+            self._mpv_proc = self._reader = self._writer = self._lookahead = None
             self._current_track = 0
-            self._paused = False
-            self._timer_paused = False
-            self._seek_timer_pending = False
-            self._seek_sync_pos = None
-            self._cold_anchor = False
-            self._resync_suppressed_until = 0.0
-            self._track_elapsed = 0.0
-            self._track_start = 0.0
-            self._chapter_starts = []
-            self._starting = False
-            self._cold_start_pending = False
-
-            if proc is None or generation in self._teardown_generations:
-                return None, generation, None
-            self._teardown_generations.add(generation)
-
+            self._paused = self._starting = self._cold_start_pending = False
+            self._last_pos, self._track_elapsed = None, 0.0
+            self._plan = []
         with self._ipc_lock:
-            ipc_sock = self._ipc_sock
-            self._ipc_sock = None
-        return proc, generation, ipc_sock
+            ipc, self._ipc_sock = self._ipc_sock, None
+        if reader:
+            reader.stop()
+        if proc or reader:
+            self._cleanup_done.clear()
+            threading.Thread(target=self._teardown_mpv_bg, args=(proc, generation, ipc, reader, writer),
+                             daemon=True, name="cdda-stop").start()
 
-    def _teardown_mpv_bg(self, proc: subprocess.Popen, generation: int,
-                         ipc_sock: Optional[socket.socket]):
+    def _teardown_mpv_bg(self, proc, generation, ipc_sock, reader=None, writer=None):
         try:
-            self._teardown_mpv_slow(proc, generation, ipc_sock)
-        finally:
-            with self._lock:
-                self._teardown_generations.discard(generation)
-
-    def _send_quit_to_socket(self, ipc_sock: Optional[socket.socket]):
-        if ipc_sock is None:
-            return
-        try:
-            msg = json.dumps({"command": ["quit"]}) + "\n"
-            ipc_sock.sendall(msg.encode())
-        except Exception:
-            pass
-
-    def _teardown_mpv_slow(self, proc: subprocess.Popen, generation: int,
-                           ipc_sock: Optional[socket.socket]):
-        # Use only the captured IPC socket. Reconnecting through the shared
-        # socket path could signal a newer mpv if this teardown is stale.
-        self._send_quit_to_socket(ipc_sock)
-        time.sleep(0.3)
-        if ipc_sock:
-            try:
-                ipc_sock.close()
-            except Exception:
-                pass
-
-        if self._proc_running(proc):
-            try:
-                proc.wait(timeout=1)
-            except subprocess.TimeoutExpired:
+            if ipc_sock:
+                try:
+                    ipc_sock.sendall(b'{"command":["quit"]}\n')
+                    ipc_sock.close()
+                except OSError:
+                    pass
+            if proc:
                 try:
                     proc.terminate()
-                    proc.wait(timeout=2)
+                    proc.wait(timeout=3)
                 except subprocess.TimeoutExpired:
-                    # A D-state drive wedge cannot be killed from userspace.
-                    # This mitigation can wedge too, so it only runs in a
-                    # daemon thread that request paths and monitors never join.
-                    try:
-                        subprocess.run(
-                            ["eject", "-i", "off", CDROM_DEVICE],
-                            timeout=3, capture_output=True,
-                        )
-                    except Exception:
-                        pass
-                    try:
-                        proc.kill()
-                    except Exception:
-                        pass
-                    try:
-                        proc.wait(timeout=2)
-                    except Exception:
-                        pass
-
-        with self._lock:
-            current_generation = self._mpv_generation
-            current_proc = self._mpv_proc
-        if current_generation != generation or current_proc is not None:
-            return
-        try:
-            _IPC_SOCK.unlink(missing_ok=True)
-        except Exception:
-            pass
-
-    # ------------------------------------------------------------------
-    # Internal: IPC socket
-    # ------------------------------------------------------------------
-
-    def _wait_for_ipc(self, timeout: float = 10):
-        """Block until mpv's IPC socket is available, then cache chapter list.
-
-        The chapter-list query is retried with a generous timeout because mpv
-        needs to read the full CD TOC before it can respond to IPC queries,
-        which can take several seconds on a CDDA drive.
-        """
-        # Phase 1: wait for the socket file to appear and connect
-        deadline = time.monotonic() + timeout
-        while time.monotonic() < deadline:
-            if _IPC_SOCK.exists():
+                    proc.kill()
+            if reader:
+                reader.join()
+            if proc and proc.stdin:
                 try:
-                    s = socket.socket(socket.AF_UNIX)
-                    s.connect(str(_IPC_SOCK))
-                    with self._ipc_lock:
-                        self._ipc_sock = s
-                    logger.info("IPC socket connected")
-                    break
-                except Exception:
+                    proc.stdin.close()
+                except (OSError, ValueError):
                     pass
-            time.sleep(0.1)
-        else:
-            logger.warning("IPC socket not available after timeout")
-            return
+            if writer and writer.ident is not None:
+                writer.join(timeout=2)
+            with self._lock:
+                if self._mpv_proc is None:
+                    _IPC_SOCK.unlink(missing_ok=True)
+        finally:
+            self._cleanup_done.set()
 
-        # chapter-list is fetched asynchronously after mpv starts playing
-        # (see _cache_chapter_list_bg).  Nothing to do here.
+    def _monitor_mpv(self, generation):
+        pause_synced = None
+        while True:
+            with self._lock:
+                if generation != self._mpv_generation:
+                    return
+                reader, proc, writer, plan = self._reader, self._mpv_proc, self._writer, list(self._plan)
+                paused = self._paused
+            if reader.error:
+                if isinstance(reader.error, DriveTimeout):
+                    self._report_stall(generation)
+                else:
+                    self._finish_segment(generation)
+                return
+            if pause_synced != paused:
+                with self._start_lock:
+                    with self._lock:
+                        if generation != self._mpv_generation:
+                            return
+                    if self._ipc_send(["set_property", "pause", paused]):
+                        pause_synced = paused
+            pos = self._ipc_query("time-pos", timeout=0.2)
+            if pos is not None:
+                self._accept_position(generation, pos)
+            if self._starting and not paused and not reader.sense_failure.is_set() and time.monotonic() - self._segment_started >= COLD_START_TOC_TIMEOUT:
+                self._report_stall(generation)
+                return
+            eof = self._ipc_query("eof-reached", timeout=0.2)
+            if eof or proc.poll() is not None:
+                if reader.finished.is_set() and writer.frames_written == sum(s.end_lba - s.start_lba for s in plan):
+                    self._finish_segment(generation, last=plan[-1].track)
+                else:
+                    self._finish_segment(generation)
+                return
+            time.sleep(0.2)
+
+    def _finish_segment(self, generation, last=None):
+        # Serialize the final generation check and callback with new starts.
+        # Callbacks may stop the player themselves, hence the reentrant lock.
+        with self._start_lock:
+            with self._lock:
+                if generation != self._mpv_generation:
+                    return
+            if last is not None:
+                self._stop_mpv()
+                if self._on_track_end:
+                    self._on_track_end(last)
+            elif self._on_disc_error:
+                self._on_disc_error()
+            else:
+                self._stop_mpv()
+
+    def _report_stall(self, generation):
+        with self._start_lock:
+            with self._lock:
+                if generation != self._mpv_generation:
+                    return
+            logger.error("Drive stalled: reader stopped answering; tearing segment down")
+            self._stop_mpv()
+            self._startup_error = DriveStallError("drive_stalled")
+            if self._on_disc_error:
+                self._on_disc_error()
 
     def _get_ipc(self) -> Optional[socket.socket]:
         """Return connected IPC socket, creating one if needed."""
         with self._ipc_lock:
             if self._ipc_sock is not None:
                 return self._ipc_sock
-        # Not connected yet — try to connect
+        # Not connected yet - try to connect
         if not _IPC_SOCK.exists():
             return None
         try:
@@ -572,12 +436,14 @@ class CDPlayer:
         """Send a fire-and-forget IPC command."""
         s = self._get_ipc()
         if s is None:
-            return
+            return False
         try:
             msg = json.dumps({"command": command}) + "\n"
             s.sendall(msg.encode())
+            return True
         except Exception:
             self._close_ipc()
+            return False
 
     def _ipc_query(self, prop: str, timeout: float = 0.5):
         """Send a get_property command and return the parsed data value.
@@ -598,6 +464,8 @@ class CDPlayer:
             raw = b""
             while True:
                 chunk = s.recv(65536)
+                if not chunk:
+                    return None
                 raw += chunk
                 if b"\n" in raw:
                     break
@@ -614,378 +482,16 @@ class CDPlayer:
                     pass
         return None
 
-    def _cache_chapter_list_bg(self, generation: int):
-        """Background thread: fetch chapter-list once mpv has read the CDDA TOC.
-
-        mpv creates the IPC socket before CDDA is fully demuxed, so
-        chapter-list returns 'property unavailable' for several seconds after
-        startup.  Retry for up to 10 s, then fall back to MusicBrainz durations.
-        """
-        for attempt in range(10):
-            time.sleep(1.0)
-            with self._lock:
-                if generation != self._mpv_generation or not self._mpv_running():
-                    return
-                if self._chapter_starts:
-                    return
-            chapter_list = self._ipc_query("chapter-list", timeout=2.0)
-            if chapter_list and isinstance(chapter_list, list) and len(chapter_list) > 0:
-                starts = [float(c.get("time", 0)) for c in chapter_list]
-                with self._lock:
-                    if generation != self._mpv_generation:
-                        return
-                    self._chapter_starts = starts
-                logger.info(
-                    f"Cached {len(self._chapter_starts)} chapter starts "
-                    f"(attempt {attempt + 1}): {[round(t, 2) for t in self._chapter_starts[:4]]}…"
-                )
-                return
-        logger.warning("chapter-list unavailable after 10 s — using TOC durations as fallback")
-
-    def _ipc_get_time_pos(self) -> Optional[float]:
-        val = self._ipc_query("time-pos")
-        try:
-            return float(val) if val is not None else None
-        except (TypeError, ValueError):
-            return None
-
-    def _elapsed_now(self) -> float:
-        pos = self._ipc_get_time_pos()
-        if pos is not None:
-            return pos
-        return self._track_elapsed + (time.monotonic() - self._track_start)
-
-    def _pause_timer_from_monitor(self, now: float):
-        with self._lock:
-            if not self._timer_paused:
-                self._track_elapsed = self._track_elapsed + (now - self._track_start)
-                self._timer_paused = True
-
-    def _resume_timer_from_monitor(self, now: float):
-        with self._lock:
-            if self._timer_paused and not self._paused:
-                self._track_start = now
-                self._timer_paused = False
-
-    def _track_rel_pos_locked(self, idx: int, pos: float) -> Optional[float]:
-        """Track-relative seconds for a disc-absolute mpv time-pos.
-
-        Caller must hold self._lock. Mirrors get_elapsed()'s priority:
-        cached chapter start (exact) → MusicBrainz cumulative durations
-        (< 1 s error, available immediately) → track 1 starts at disc 0.
-        Returns None when the track index can't be resolved yet.
-        """
-        if 0 <= idx < len(self._chapter_starts):
-            return max(0.0, float(pos) - self._chapter_starts[idx])
-        try:
-            from state import get_state
-            tracks = get_state().tracks
-            if tracks and 0 <= idx < len(tracks):
-                mb_start = float(sum(t.duration for t in tracks[:idx]))
-                return max(0.0, float(pos) - mb_start)
-        except Exception:
-            pass
-        if idx == 0:
-            return max(0.0, float(pos))
-        return None
-
-    def _sync_timer_to_time_pos(self, generation: int, pos: float, now: float):
-        with self._lock:
-            if generation != self._mpv_generation or self._paused or self._starting:
-                return
-            idx = self._current_track - 1
-
-            # Cold start: mpv is a fresh process, so the first real time-pos is a
-            # genuine near-start track position — there is no stale seek target to
-            # filter out (unlike an in-running track change). Anchor to it at once,
-            # even before the chapter list caches, using the best track-start
-            # estimate available. This makes the counter tick smoothly from ~0 with
-            # the audio instead of holding at 0 and jumping ~1-2 s once the TOC
-            # caches and advance is confirmed. Guarded to small positions: a large
-            # value means the monitor sampled late, and the standard confirm path
-            # below handles that case unchanged.
-            if self._cold_anchor and self._seek_timer_pending:
-                rel = self._track_rel_pos_locked(idx, pos)
-                if rel is not None and 0.0 <= rel < 4.0:
-                    self._track_elapsed = rel
-                    self._track_start = now
-                    self._timer_paused = False
-                    self._seek_timer_pending = False
-                    self._seek_sync_pos = None
-                    self._cold_anchor = False
-                    self._resync_suppressed_until = now + 8.0
-                    return
-                # Not yet resolvable (no chapter/MB data) or implausibly large —
-                # fall through to the standard hold/confirm logic.
-
-            if not (0 <= idx < len(self._chapter_starts)):
-                # Chapter starts not cached yet (cold-start race with the
-                # background TOC cache). If a seek has held at 0 past its
-                # deadline, stop waiting and free-run rather than freeze at 0.
-                if self._seek_timer_pending and now > self._seek_pending_deadline:
-                    self._track_start = now
-                    self._timer_paused = False
-                    self._seek_timer_pending = False
-                    self._seek_sync_pos = None
-                return
-            rel_pos = max(0.0, float(pos) - self._chapter_starts[idx])
-            if self._seek_timer_pending:
-                if self._seek_sync_pos is None or rel_pos <= self._seek_sync_pos + 0.25:
-                    self._seek_sync_pos = rel_pos
-                    return
-                # Audio is advancing: anchor to the REAL track position so the
-                # counter matches the audio (anchoring to 0 would lag behind).
-                self._track_elapsed = rel_pos
-                self._track_start = now
-                self._timer_paused = False
-                self._seek_timer_pending = False
-                self._seek_sync_pos = None
-                self._resync_suppressed_until = now + 8.0
-                return
-            if self._timer_paused:
-                return
-            timer_elapsed = self._track_elapsed + (now - self._track_start)
-            correction = rel_pos - timer_elapsed
-            if now < self._resync_suppressed_until:
-                return
-            if correction <= 1.0:
-                return
-            self._track_elapsed = rel_pos
-            self._track_start = now
-
-    # ------------------------------------------------------------------
-    # Internal: monitor thread
-    # ------------------------------------------------------------------
-
-    def _monitor_mpv(self, generation: int):
-        """
-        Watch mpv events via IPC:
-        - chapter-change → update _current_track, fire on_track_end for prev
-        - end-file       → disc ended, fire on_track_end for last track
-        """
-        # Wait for IPC socket
-        deadline = time.monotonic() + 15
-        while time.monotonic() < deadline:
-            if _IPC_SOCK.exists():
-                break
-            time.sleep(0.15)
-        else:
-            return
-
-        try:
-            s = socket.socket(socket.AF_UNIX)
-            s.connect(str(_IPC_SOCK))
-            s.settimeout(1.0)
-            # Subscribe to chapter-change, pause, and cache-stall events
-            s.sendall(b'{"command":["observe_property",1,"chapter"]}\n')
-            s.sendall(b'{"command":["observe_property",2,"pause"]}\n')
-            s.sendall(b'{"command":["observe_property",3,"paused-for-cache"]}\n')
-        except Exception as e:
-            logger.warning(f"Monitor IPC connect failed: {e}")
-            return
-
-        buf = b""
-        end_handled       = False
-        _stall_pos:   Optional[float] = None
-        _stall_since: float = time.monotonic()
-        _last_pos_chk: float = time.monotonic()
-        _paused_for_cache:  bool  = False
-        _cache_stall_since: float = 0.0   # monotonic time when paused-for-cache first became True
-        # observe_property emits one immediate notification per property with
-        # the current value at subscription time. Those baseline notifications
-        # are not transitions — pause=true at startup just means we passed
-        # --pause, and paused-for-cache=false is mpv's idle steady state.
-        # Suppress them so the journal only records real events.
-        _pause_baseline_seen: bool = False
-        _cache_baseline_seen: bool = False
-
-        while True:
-            with self._lock:
-                if generation != self._mpv_generation or not self._mpv_running():
-                    break
-            # Sample time-pos faster during a track-change seek so the counter
-            # leaves 0 the instant audio starts (no visible step).
-            s.settimeout(0.3 if self._seek_timer_pending else 1.0)
-            try:
-                chunk = s.recv(4096)
-                if not chunk:
-                    break
-                buf += chunk
-                # Got IPC data — reset stall timer
-                _stall_since = time.monotonic()
-            except socket.timeout:
-                # Stall watchdog: check time-pos every 2 s.
-                # If it hasn't advanced in 8 s while playing,
-                # assume disc was ejected and mpv is hung.
-                now = time.monotonic()
-                _pos_interval = 0.3 if self._seek_timer_pending else 2.0
-                if now - _last_pos_chk >= _pos_interval and not self._paused and not self._starting:
-                    _last_pos_chk = now
-                    if _paused_for_cache:
-                        if now - _cache_stall_since < 3.0:
-                            # Buffer drained — give the drive 3 s to recover before
-                            # the stall watchdog fires.  Beyond that it's genuinely stuck.
-                            _stall_since = now
-                    pos = self._ipc_query("time-pos")
-                    if pos is None:
-                        pass  # transient IPC failure — don't touch stall tracking
-                    elif pos != _stall_pos:
-                        self._sync_timer_to_time_pos(generation, pos, now)
-                        _stall_pos   = pos
-                        _stall_since = now
-                    elif now - _stall_since > 6.0:
-                        logger.warning(
-                            f"Playback stalled >{now - _stall_since:.0f}s "
-                            f"(time-pos={pos}) — disc error"
-                        )
-                        end_handled = True  # prevent double-fire from cleanup
-                        if self._on_disc_error:
-                            self._on_disc_error()
-                        break
-                continue
-            except Exception:
-                break
-
-            while b"\n" in buf:
-                line, buf = buf.split(b"\n", 1)
-                line = line.strip()
-                if not line:
-                    continue
-                try:
-                    msg = json.loads(line)
-                except Exception:
-                    continue
-
-                event = msg.get("event")
-
-                if event == "property-change" and msg.get("name") == "paused-for-cache":
-                    now_pfc = time.monotonic()
-                    new_paused = bool(msg.get("data"))
-                    if not _cache_baseline_seen:
-                        # Initial baseline notification — anchor the timer so any
-                        # later true→false transition computes a sensible delta.
-                        _cache_baseline_seen = True
-                        _cache_stall_since = now_pfc
-                        _paused_for_cache = new_paused
-                    elif new_paused and not _paused_for_cache:
-                        # Real stall: false→true transition.
-                        _cache_stall_since = now_pfc
-                        _paused_for_cache = True
-                        self._pause_timer_from_monitor(now_pfc)
-                        logger.warning("mpv paused waiting for drive data (CDDA read retry)")
-                    elif (not new_paused) and _paused_for_cache:
-                        # Real recovery: true→false transition we previously logged.
-                        _paused_for_cache = False
-                        self._resume_timer_from_monitor(now_pfc)
-                        logger.info(
-                            f"mpv cache refilled after "
-                            f"{now_pfc - _cache_stall_since:.1f}s — resuming"
-                        )
-                    # Other combinations (false→false redundant notifications) are
-                    # mpv's internal bookkeeping; no event from the user's POV.
-
-                elif event == "property-change" and msg.get("name") == "pause":
-                    paused = msg.get("data")
-                    if not _pause_baseline_seen:
-                        # Initial baseline notification — mpv was started with
-                        # --pause, so the first observed value is true. Not an
-                        # auto-pause event; suppress to avoid misleading logs.
-                        _pause_baseline_seen = True
-                    elif paused is True:
-                        self._pause_timer_from_monitor(time.monotonic())
-                        logger.warning("mpv auto-paused (CDDA buffer underrun or drive stall)")
-                    elif paused is False:
-                        self._resume_timer_from_monitor(time.monotonic())
-                        logger.info("mpv auto-resumed")
-
-                elif event == "property-change" and msg.get("name") == "chapter":
-                    new_chapter = msg.get("data")
-                    if new_chapter is not None:
-                        new_track = new_chapter + 1  # 1-indexed
-                        with self._lock:
-                            prev_track = self._current_track
-                            # Only update internal state for sequential auto-advance.
-                            # User seeks set _current_track via play() before the IPC
-                            # command fires; monitor events from those seeks must not
-                            # overwrite _current_track or trigger _on_track_end.
-                            sequential = new_track == prev_track + 1 and prev_track > 0
-                            landed = new_track == prev_track and prev_track > 0
-                            if sequential:
-                                self._current_track = new_track
-                                # Natural advance: audio is continuous across the
-                                # CDDA track boundary, so the timer keeps running
-                                # from 0 — there is no silent seek to wait out.
-                                self._track_elapsed = 0.0
-                                self._track_start   = time.monotonic()
-                                self._timer_paused  = False
-                                self._seek_timer_pending = False
-                                self._seek_sync_pos = None
-                                self._resync_suppressed_until = time.monotonic() + 8.0
-                            elif landed:
-                                # Same as a seek: hold at 0 through the silent seek
-                                # and anchor on real audio progress instead of
-                                # counting from the chapter-change event.
-                                self._track_elapsed = 0.0
-                                self._track_start   = time.monotonic()
-                                self._timer_paused  = True
-                                self._seek_timer_pending = True
-                                self._seek_sync_pos = None
-                                self._cold_anchor = False
-                                self._resync_suppressed_until = time.monotonic() + 8.0
-                        if sequential:
-                            logger.info(f"Track advanced: {prev_track} → {new_track}")
-                            if self._on_track_end:
-                                self._on_track_end(prev_track)
-
-                elif event == "end-file":
-                    end_handled = True
-                    reason = msg.get("reason", "")
-                    if reason in ("stop", "quit"):
-                        break
-                    with self._lock:
-                        last  = self._current_track
-                        total = self._total_tracks
-                    if reason == "eof" and last == total and total > 0:
-                        # Natural end of disc — last track finished cleanly
-                        logger.info(f"Disc ended at track {last}")
-                        if self._on_track_end:
-                            self._on_track_end(last)
-                    else:
-                        # Premature end: disc ejected, read error, or eof mid-disc
-                        logger.info(f"mpv end-file reason={reason} at track {last}/{total} — disc error")
-                        if self._on_disc_error:
-                            self._on_disc_error()
-                    break
-
-        try:
-            s.close()
-        except Exception:
-            pass
-
-        # Clean up mpv proc reference if it has exited unexpectedly.
-        # If end-file was never received (race: mpv exited before the event was
-        # processed), fire _on_disc_error so the UI doesn't stay frozen.
-        should_error = False
-        with self._lock:
-            if (
-                generation == self._mpv_generation
-                and self._mpv_proc
-                and self._mpv_proc.poll() is not None
-            ):
-                self._mpv_proc = None
-                self._current_track = 0
-                should_error = not end_handled
-
-        if should_error and self._on_disc_error:
-            logger.info("mpv exited without end-file event — firing disc error")
-            self._on_disc_error()
-
 
 # ---------------------------------------------------------------------------
 # Module-level singleton + simple function API
 # ---------------------------------------------------------------------------
 
 _player = CDPlayer()
+
+
+def prepare_disc():
+    return _player.prepare_disc()
 
 
 def setup_player(on_track_end_callback: Callable[[int], None],
@@ -1047,8 +553,9 @@ def next_track():
     current = _player.current_track()
     if current <= 0 or not state.tracks:
         return
-    next_num = current + 1
-    if next_num > len(state.tracks):
+    numbers = [t.number for t in _player._toc.audio_tracks()] if _player._toc else [t.number for t in state.tracks]
+    next_num = next((n for n in numbers if n > current), None)
+    if next_num is None:
         return
     _player.play(next_num, len(state.tracks),
                  cdrom_device=CDROM_DEVICE, alsa_device=state.alsa_device,
@@ -1056,7 +563,7 @@ def next_track():
     # Monitor thread won't fire _on_track_end (current_track already set to next_num by play())
     # so update main state directly
     state.track_number = next_num
-    state.track_title  = state.tracks[next_num - 1].title
+    state.track_title = next((t.title for t in state.tracks if t.number == next_num), f"Track {next_num}")
     state.elapsed      = 0
 
 
@@ -1064,32 +571,39 @@ def prev_track(alsa_device: str = ALSA_DEVICE):
     from state import get_state
     state = get_state()
     current = _player.current_track()
-    # Use the monotonic timer for the prev-direction decision.  IPC time-pos
-    # reflects actual CDDA sector reads which lag behind wall-clock time
-    # (CDDA seek/spin-up latency), so it under-reports elapsed time right
-    # after a chapter jump and would always send us to the previous track.
-    # The timer is reset on every play() call and accurately measures how
-    # long we have been in the current track from the user's perspective.
     if not state.tracks or current < 1:
         logger.warning(f"prev_track: no active track (current={current}), ignoring")
         return
-    elapsed = _player._get_timer_elapsed()
-    # <5s into track and not on first track → go to previous track
-    # otherwise (≥5s, or on track 1) → restart current track
-    target = (current - 1) if elapsed < 5.0 and current > 1 else current
-    logger.info(f"prev_track: current={current}, elapsed={elapsed:.1f}s → target={target}")
+    elapsed = _player.get_elapsed()
+    # <5s into track and not on first track -> go to previous track
+    # otherwise (>=5s, or on track 1) -> restart current track
+    numbers = [t.number for t in _player._toc.audio_tracks()] if _player._toc else [t.number for t in state.tracks]
+    previous = [n for n in numbers if n < current]
+    target = previous[-1] if elapsed < 5.0 and previous else current
+    logger.info(f"prev_track: current={current}, elapsed={elapsed:.1f}s -> target={target}")
     _player.play(target, len(state.tracks), alsa_device=alsa_device,
                  seek_to_sec=_track_start_sec(target))
     # Monitor thread won't fire (current_track already set to target by play())
     state.track_number = target
-    state.track_title  = state.tracks[target - 1].title
+    state.track_title = next((t.title for t in state.tracks if t.number == target), f"Track {target}")
     state.elapsed      = 0
 
 
 def eject():
     _player.stop()
-    subprocess.run(["eject", CDROM_DEVICE], check=True, timeout=10)
+    def _go():
+        _player._cleanup_done.wait()
+        subprocess.run(["eject", CDROM_DEVICE], check=True, timeout=10)
+    threading.Thread(target=_go, daemon=True).start()
 
 
 def get_player_status() -> dict:
     return _player.get_status()
+
+
+def shutdown():
+    _player.stop()
+    _player._cleanup_done.wait()
+
+
+atexit.register(shutdown)

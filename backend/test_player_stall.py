@@ -1,96 +1,83 @@
-"""Regression tests for a cold start whose TOC read never completes.
-
-Run:  python -m unittest test_player_stall
-
-Scenario (seen on real hardware, 2026-09-18): the optical drive stops
-answering SCSI commands while mpv opens it. mpv's opener thread blocks in
-uninterruptible I/O and the "chapter" property never becomes available.
-Before this fix the player waited out its deadline, logged "Playing track N"
-and unpaused an mpv that had no file loaded: the UI showed PLAYING with a
-frozen 0:00 counter and no way to recover. Now the player tears mpv down and
-raises DriveStallError so the backend can go back to LOADED with a visible
-"drive_stalled" reason.
-"""
+"""Cold-start deadline and kernel-aborted-read regression tests."""
 import threading
 import time
 import unittest
+from contextlib import ExitStack
 from unittest import mock
-
 import player
-
-_real_sleep = time.sleep
-
-
-class _FakeProc:
-    pid = 4343
-
-    def poll(self):
-        return None
-
-    def wait(self, timeout=None):
-        return 0
-
-    def terminate(self):
-        pass
-
-    def kill(self):
-        pass
-
-
-def _make_stalled_player():
-    """A CDPlayer whose fake mpv never reports a chapter (TOC never read)."""
-    p = player.CDPlayer()
-    sent = []
-    stopped = threading.Event()
-    p._spawn_mpv = lambda cdrom_device, alsa_device: _FakeProc()
-    p._monitor_mpv = lambda generation: None
-    p._cache_chapter_list_bg = lambda generation: None
-    p._wait_for_ipc = lambda timeout=10: None
-    p._ipc_send = lambda command: sent.append(list(command))
-    p._ipc_query = lambda prop, timeout=0.5: None
-
-    real_stop_mpv = p._stop_mpv
-
-    def _stop_mpv():
-        stopped.set()
-        real_stop_mpv()
-
-    p._stop_mpv = _stop_mpv
-    return p, sent, stopped
+from test_player_raw import fake_player
 
 
 class ColdStartStallTests(unittest.TestCase):
     def test_stall_raises_and_tears_down(self):
-        p, sent, stopped = _make_stalled_player()
-        with mock.patch.object(player, "COLD_START_TOC_TIMEOUT", 0.4), \
-             mock.patch.object(player.time, "sleep", lambda s: _real_sleep(0.01)):
+        gate = threading.Event()
+        with ExitStack() as stack:
+            p, processes, readers, sent = fake_player(stack, pcm_gate=gate)
+            stack.enter_context(mock.patch.object(player, "COLD_START_TOC_TIMEOUT", 0.15))
             t0 = time.monotonic()
             with self.assertRaises(player.DriveStallError):
                 p.play(3, 12)
-            elapsed = time.monotonic() - t0
-        self.assertGreaterEqual(elapsed, 0.4)
-        self.assertLess(elapsed, 3.0)
-        self.assertTrue(stopped.is_set(), "mpv must be torn down on a stall")
-        self.assertFalse(p.cold_start_pending)
-        # Never unpaused, never seeked: no audio command reached mpv.
-        self.assertNotIn(["set_property", "pause", False], sent)
-        self.assertEqual([c for c in sent if c[:2] == ["set_property", "chapter"]], [])
-        self.assertFalse(p.drive_busy, "player must not report the drive as busy after teardown")
+            self.assertGreaterEqual(time.monotonic() - t0, 0.15)
+            self.assertLess(time.monotonic() - t0, 1)
+            self.assertFalse(p.cold_start_pending)
+            self.assertFalse(p.drive_busy)
+            self.assertTrue(readers[0].stopped.is_set())
+            self.assertTrue(p._cleanup_done.wait(2))
+            self.assertTrue(processes[0].terminated)
+            self.assertEqual(sent, [])
 
     def test_cold_start_pending_visible_while_waiting(self):
-        p, sent, stopped = _make_stalled_player()
-        with mock.patch.object(player, "COLD_START_TOC_TIMEOUT", 0.6), \
-             mock.patch.object(player.time, "sleep", lambda s: _real_sleep(0.01)):
-            t = threading.Thread(target=lambda: self._swallow(p), daemon=True)
+        gate = threading.Event()
+        with ExitStack() as stack:
+            p, _, _, _ = fake_player(stack, pcm_gate=gate)
+            stack.enter_context(mock.patch.object(player, "COLD_START_TOC_TIMEOUT", 0.2))
+            t = threading.Thread(target=lambda: self._swallow(p))
             t.start()
             for _ in range(100):
                 if p.cold_start_pending:
                     break
-                _real_sleep(0.005)
+                time.sleep(0.005)
             self.assertTrue(p.cold_start_pending)
-            t.join(timeout=5)
-        self.assertFalse(t.is_alive())
-        self.assertFalse(p.cold_start_pending)
+            t.join(2)
+            self.assertFalse(t.is_alive())
+            self.assertFalse(p.cold_start_pending)
+
+    def test_two_kernel_aborts_raise_stall(self):
+        from cdda_source import DriveTimeout
+        gate = threading.Event()
+        with ExitStack() as stack:
+            p, processes, readers, _ = fake_player(stack, pcm_gate=gate)
+            errors = []
+            t = threading.Thread(target=lambda: self._capture(p, errors))
+            t.start()
+            for _ in range(100):
+                if readers:
+                    break
+                time.sleep(0.005)
+            readers[-1].error = DriveTimeout("two aborted reads", host_status=3)
+            t.join(2)
+            self.assertFalse(t.is_alive())
+            self.assertIsInstance(errors[0], player.DriveStallError)
+            self.assertTrue(p._cleanup_done.wait(2))
+            self.assertTrue(processes[0].terminated)
+
+    def test_toc_read_hang_is_bounded_and_late_completion_discarded(self):
+        gate = threading.Event()
+        with ExitStack() as stack:
+            p, processes, _, _ = fake_player(stack, toc_gate=gate)
+            stack.enter_context(mock.patch.object(player, "COLD_START_TOC_TIMEOUT", 0.1))
+            with self.assertRaises(player.DriveStallError):
+                p.play(1, 12)
+            gate.set()
+            time.sleep(0.05)
+            self.assertEqual(processes, [])
+
+    @staticmethod
+    def _capture(p, errors):
+        try:
+            p.play(1, 12)
+        except Exception as exc:
+            errors.append(exc)
 
     @staticmethod
     def _swallow(p):

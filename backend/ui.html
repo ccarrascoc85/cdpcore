@@ -857,6 +857,7 @@ html.light .face-footer {
           <div class="vfd-state-pill">
             <div class="vfd-pulse" id="vfd-pulse"></div>
             <span id="vfd-label">NO DISC</span>
+            <span id="vfd-read-errors" hidden></span>
           </div>
         </div>
 
@@ -1062,6 +1063,9 @@ function updateVfd(s) {
   const paused  = s.state === 'paused';
   const active  = playing || paused;
   const hasDisc = s.state !== 'idle';
+  const readMarker = document.getElementById('vfd-read-errors');
+  readMarker.hidden = !(playing && Number(s.read_errors) > 0);
+  readMarker.textContent = readMarker.hidden ? '' : 'READ ERR ' + Number(s.read_errors);
 
   setInd('ind-play',  playing);
   setInd('ind-pause', paused);

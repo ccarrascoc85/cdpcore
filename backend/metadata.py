@@ -4,6 +4,7 @@ Rate limit: 1 request/second (MB policy).
 """
 import hashlib
 import logging
+import re
 import os
 import time
 from pathlib import Path
@@ -137,10 +138,33 @@ def _parse_track_list(track_list: list) -> List[dict]:
     return sorted(tracks, key=lambda x: x["number"])
 
 
+# Cover Art Archive serves the original upload at /front, which can be a
+# high-resolution scan of 20 MB or more (too heavy for a browser on a phone).
+# It also serves generated thumbnails at /front-1200 and /front-500; use those.
+CAA_COVER_SIZES = ("1200", "500")
+# A cached cover larger than this was fetched before thumbnails were used:
+# fetch it again in the smaller size.
+MAX_CACHED_COVER_BYTES = 2 * 1024 * 1024
+
+
 def _build_cover_art_url(release_id: str) -> Optional[str]:
     if not release_id:
         return None
-    return f"https://coverartarchive.org/release/{release_id}/front"
+    return f"https://coverartarchive.org/release/{release_id}/front-{CAA_COVER_SIZES[0]}"
+
+
+def _cover_candidates(cover_url: str) -> list:
+    """URLs to try for a cover, smallest adequate size first.
+
+    Cover Art Archive front images (full size or any thumbnail size, as stored
+    in older metadata caches) map to the 1200 px thumbnail, then the 500 px
+    one, then the original as a last resort. Any other URL is used as is.
+    """
+    m = re.match(r"^(https?://coverartarchive\.org/release/[^/]+/front)(?:-\d+)?$", cover_url or "")
+    if not m:
+        return [cover_url] if cover_url else []
+    base = m.group(1)
+    return [f"{base}-{size}" for size in CAA_COVER_SIZES] + [base]
 
 
 # ---------------------------------------------------------------------------
@@ -309,19 +333,31 @@ def fetch_and_cache_cover(cover_url: str, disc_id: str) -> Optional[Path]:
 
     local_path = CACHE_DIR / f"cover_{disc_id}.jpg"
     if local_path.exists():
-        return local_path
-
-    try:
-        _mb_rate_limit()
-        with httpx.Client(follow_redirects=True, timeout=15) as client:
-            resp = client.get(cover_url)
-            resp.raise_for_status()
-            local_path.write_bytes(resp.content)
-            logger.info(f"Cover art cached at {local_path}")
+        size = local_path.stat().st_size
+        if size <= MAX_CACHED_COVER_BYTES or not _cover_candidates(cover_url)[1:]:
             return local_path
+        logger.info(f"Cached cover is {size // 1024} KiB; fetching a smaller size")
+
+    last_error = None
+    try:
+        with httpx.Client(follow_redirects=True, timeout=15) as client:
+            for url in _cover_candidates(cover_url):
+                _mb_rate_limit()
+                try:
+                    resp = client.get(url)
+                    resp.raise_for_status()
+                except Exception as e:
+                    last_error = e
+                    continue
+                tmp = local_path.with_suffix(".tmp")
+                tmp.write_bytes(resp.content)
+                tmp.replace(local_path)
+                logger.info(f"Cover art cached at {local_path} ({len(resp.content) // 1024} KiB from {url})")
+                return local_path
     except Exception as e:
-        logger.error(f"Cover art download failed: {e}")
-        return None
+        last_error = e
+    logger.error(f"Cover art download failed: {last_error}")
+    return local_path if local_path.exists() else None
 
 
 # ---------------------------------------------------------------------------
