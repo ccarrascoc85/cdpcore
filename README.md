@@ -149,6 +149,8 @@ When a disc is detected, the following cascade runs until metadata is found:
    durations (in sectors), and the CDDB fingerprint
 2. **MusicBrainz** is queried first for album, artist, track list, and release ID
 3. If MusicBrainz returns a release ID, cover art is fetched from **Cover Art Archive**
+   (its 1200 px thumbnail, with 500 px and the original as fallbacks; original uploads can
+   be scans of 20 MB or more)
 4. If MusicBrainz has no match, **GnuDB** (free CDDB server) is tried using the
    FreeDB fingerprint - it returns album, artist, and track titles (no durations)
 5. Track durations for GnuDB results are filled from the TOC (sector-accurate)
@@ -258,10 +260,12 @@ A separate administrative surface at `http://cdpcore.local:8000/system` provides
 - **CPU** - temperature (via `vcgencmd`), load average (1 / 5 / 15 min) with visual bar
 - **Memory & Storage** - RAM and disk usage with bars (used / total)
 - **Network** - all interfaces with link state, IP, MAC, and link speed
-- **CD Drive** - model and speed-control support (1x ioctl)
+- **CD Drive** - model and measured minimum read speed
 - **Services** - cdpcore-backend and cdpcore-extension status and PID
 - **Roon Bridge / Extension** - service status, PID, settings, and extension actions
 - **Admin Settings** - admin PIN change and auth-mode change (`PIN` or explicit `LAN-Trust`)
+- **Advanced playback** - read mode (continuous / recovery), gap treatment (mirror / silence) and live
+  counters of concealed and C2-interpolated frames (collapsed by default)
 - **Audio** - current audio device state (USB DAC / Multiple DACs / No USB DAC / Audio device missing) with the selected DAC name when applicable, updated automatically
 - **Updates** - operator-initiated update checks and release updates from the latest tagged GitHub Release
 - **Backend Logs** - last 150 lines of the backend service journal, with a refresh button
@@ -757,8 +761,8 @@ was persisted.
 ```bash
 fuser /dev/snd/*
 # If something holds the device -> disable PipeWire (Step A)
-sudo -u cdplayer mpv --no-video \
-    --ao=alsa --audio-device=alsa/hw:1,0 cdda:///dev/cdrom
+# Then check that the service user can open the DAC (replace hw:1,0 with your card):
+sudo -u cdplayer speaker-test -D plughw:1,0 -c 2 -t sine -l 1
 ```
 
 ### No cover art
