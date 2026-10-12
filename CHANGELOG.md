@@ -16,6 +16,8 @@ Deployed appliances track tagged releases, not the `main` branch HEAD.
 
 ## [Unreleased]
 
+## [1.5.0] - 2026-10-12
+
 ### Changed
 
 - CDPcore reads CDDA through bounded SG_IO READ CD commands and streams
