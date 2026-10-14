@@ -1,0 +1,33 @@
+<svg viewBox="0 0 360 120" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="CDPcore primary logo">
+  <defs>
+    <linearGradient id="cdMetal-main" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#555"/>
+      <stop offset="50%" stop-color="#ccc"/>
+      <stop offset="100%" stop-color="#333"/>
+    </linearGradient>
+    <linearGradient id="laserBeam-main" x1="0%" y1="50%" x2="100%" y2="50%">
+      <stop offset="0%" stop-color="#00E5FF"/>
+      <stop offset="50%" stop-color="#00E5FF"/>
+      <stop offset="100%" stop-color="#D500F9"/>
+    </linearGradient>
+    <filter id="glow-main" x="-20%" y="-20%" width="140%" height="140%">
+      <feGaussianBlur stdDeviation="3" result="blur"/>
+      <feMerge>
+        <feMergeNode in="blur"/>
+        <feMergeNode in="SourceGraphic"/>
+      </feMerge>
+    </filter>
+  </defs>
+  <g transform="translate(10, 10)">
+    <circle cx="50" cy="50" r="48" fill="none" stroke="url(#cdMetal-main)" stroke-width="3"/>
+    <circle cx="50" cy="50" r="38" fill="none" stroke="#333" stroke-width="1"/>
+    <circle cx="50" cy="50" r="28" fill="none" stroke="#333" stroke-width="1"/>
+    <circle cx="50" cy="50" r="16" fill="none" stroke="url(#cdMetal-main)" stroke-width="1.5"/>
+    <circle cx="50" cy="50" r="6" fill="#222"/>
+    <path d="M -10 50 L 20 50 L 20 25 L 50 25 L 50 75 L 80 75 L 80 50 L 110 50"
+      fill="none" stroke="url(#laserBeam-main)" stroke-width="5"
+      stroke-linejoin="miter" stroke-linecap="square" filter="url(#glow-main)"/>
+  </g>
+  <text x="135" y="75" font-family="'Courier New', monospace" font-size="46" font-weight="bold" fill="#e5e5e5">CDP<tspan fill="url(#laserBeam-main)">core</tspan></text>
+  <text x="138" y="95" font-family="Arial, sans-serif" font-size="9.5" font-weight="bold" fill="#666" letter-spacing="1.4">BIT-PERFECT DIGITAL TRANSPORT</text>
+</svg>

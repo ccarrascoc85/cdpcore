@@ -1,8 +1,13 @@
-# CDPcore
+<p align="center">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="assets/brand/logo-primary.svg">
+    <img src="assets/brand/logo-monochrome.svg" alt="CDPcore - bit-perfect digital transport" width="440">
+  </picture>
+</p>
 
-Dedicated CD playback appliance for Raspberry Pi.
+<p align="center"><b>Dedicated CD playback appliance for Raspberry Pi.</b></p>
 
-*CDPcore is a CD player with network-based control, designed for bit-perfect playback and full control over the audio pipeline.*
+<p align="center"><i>A CD player with network-based control, designed for bit-perfect playback and full control over the audio pipeline.</i></p>
 
 ![CDPcore web UI playing a disc](assets/screenshots/desktop-dark.png)
 
@@ -245,10 +250,18 @@ The CDPcore interface is served at `http://cdpcore.local:8000/` and provides:
 <p align="center">
   <img src="assets/screenshots/playback.gif" alt="Playback with the elapsed counter and progress bar running" width="70%">
 </p>
-<p align="center">
-  <img src="assets/screenshots/desktop-light.png" alt="Light theme" width="64%">
-  <img src="assets/screenshots/mobile-dark.png" alt="Mobile layout" width="27%">
-</p>
+<table align="center">
+  <tr>
+    <td align="center" valign="top">
+      <img src="assets/screenshots/desktop-light.png" alt="Light theme" width="480"><br>
+      <sub>Light theme</sub>
+    </td>
+    <td align="center" valign="top">
+      <img src="assets/screenshots/mobile-dark.png" alt="Mobile layout" width="200"><br>
+      <sub>Mobile layout</sub>
+    </td>
+  </tr>
+</table>
 
 The UI connects to `/ws` via WebSocket on load. The server pushes a state snapshot every second (for elapsed time) and immediately on any state change (disc insert, track advance, play/pause/stop, eject). If the WebSocket drops, the UI falls back to polling `/status` every 2 s and reconnects automatically.
 
