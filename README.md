@@ -574,6 +574,10 @@ The first time the extension connects you will be prompted to authorize it:
 The pairing token is stored in `/home/cdplayer/.config/cdpcore-extension/config.json`
 and persists across service restarts - authorization is required only once.
 
+In the Extensions list CDPcore shows the product version and a status line with
+what the player is doing and which Roon zone it controls, for example
+`Disc loaded · <album> · zone: <zone>`.
+
 Configure the extension behaviour in Settings -> Extensions -> CDPcore -> Settings.
 
 | Setting | Default | Description |
@@ -595,7 +599,7 @@ Settings are persisted at `/home/cdplayer/.config/cdpcore-extension/settings.jso
 ```bash
 # Health check
 curl http://localhost:8000/health
-# Expected: {"status":"ok","version":"1.0.1"}
+# Expected: {"status":"ok","version":"X.Y.Z"} (the installed release)
 
 # Check whether first-time setup is pending
 curl http://localhost:8000/admin/setup_required

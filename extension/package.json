@@ -17,6 +17,7 @@
     "node-roon-api-transport": "RoonLabs/node-roon-api-transport",
     "node-roon-api-image":     "RoonLabs/node-roon-api-image",
     "node-roon-api-settings":  "RoonLabs/node-roon-api-settings",
+    "node-roon-api-status":    "RoonLabs/node-roon-api-status",
     "node-fetch": "^2.7.0"
   },
   "engines": {

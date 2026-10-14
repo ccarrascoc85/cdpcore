@@ -15,6 +15,7 @@ const RoonApi = require("node-roon-api");
 const RoonApiTransport = require("node-roon-api-transport");
 const RoonApiImage = require("node-roon-api-image");
 const RoonApiSettings = require("node-roon-api-settings");
+const RoonApiStatus = require("node-roon-api-status");
 
 const CDPoller = require("./poller");
 const RoonTransportManager = require("./transport");
@@ -29,6 +30,24 @@ const SETTINGS_PATH = path.join(
 );
 const STATE_PATH    = "/var/cache/cd-player/roon-state.json";
 const ROON_RETRY_MS = 5000;
+
+// Roon identifies the extension (and its authorization) by this id. It is not
+// shown to the user; changing it would force every appliance to authorize the
+// extension again, so it stays as it has always been.
+const EXTENSION_ID = "com.local.cd-player";
+
+// The product version, read from the backend's VERSION file
+// (/opt/cdpcore/backend/VERSION next to /opt/cdpcore/extension on an appliance).
+function readProductVersion() {
+  try {
+    const v = fs.readFileSync(path.join(__dirname, "..", "backend", "VERSION"), "utf8").trim();
+    if (v) return v;
+  } catch (e) {
+    console.warn("[cd-player] Could not read the product VERSION:", e.message);
+  }
+  return "unknown";
+}
+const PRODUCT_VERSION = readProductVersion();
 
 // ---------------------------------------------------------------------------
 // Settings persistence
@@ -89,17 +108,18 @@ const transport_mgr = new RoonTransportManager();
 // Roon API setup
 // ---------------------------------------------------------------------------
 const roon = new RoonApi({
-  extension_id:    "com.local.cd-player",
+  extension_id:    EXTENSION_ID,
   display_name:    "CDPcore",
-  display_version: "1.0.0",
-  publisher:       "ccarrascoc85",
-  email:           "ccarrascoc85@gmail.com",
+  display_version: PRODUCT_VERSION,
+  publisher:       "CDPcore",
+  email:           "",   // required by node-roon-api; intentionally empty
   website:         "https://github.com/ccarrascoc85/cdpcore",
 
   core_paired(core) {
     console.log("[roon] Paired with core:", core.display_name);
     writeRoonState(true, core.display_name);
     onCorePaired(core);
+    updateStatus();
   },
   core_unpaired(core) {
     console.log("[roon] Unpaired from core:", core.display_name);
@@ -212,6 +232,32 @@ function buildSettingsLayout(values) {
   };
 }
 
+// Status service: the line under the version in Roon Settings > Extensions
+const svc_status = new RoonApiStatus(roon);
+let lastStatusLine = null;
+
+function statusLine() {
+  const zone = settings.zone_name ? `zone: ${settings.zone_name}` : "no zone selected";
+  if (!currentStatus) return { text: "Waiting for the CDPcore backend", error: true };
+  if (currentStatus.error === "drive_stalled") return { text: `Drive error \u00b7 ${zone}`, error: true };
+  const album = currentStatus.album ? ` \u00b7 ${currentStatus.album}` : "";
+  switch (currentStatus.state) {
+    case "playing": return { text: `Playing track ${currentStatus.track_number}${album} \u00b7 ${zone}`, error: false };
+    case "paused":  return { text: `Paused \u00b7 track ${currentStatus.track_number}${album} \u00b7 ${zone}`, error: false };
+    case "loaded":  return { text: `Disc loaded${album} \u00b7 ${zone}`, error: false };
+    default:        return { text: `Ready \u00b7 no disc \u00b7 ${zone}`, error: false };
+  }
+}
+
+// Called on every poll; only sends to Roon when the line actually changes.
+function updateStatus() {
+  const { text, error } = statusLine();
+  const key = `${error}|${text}`;
+  if (key === lastStatusLine) return;
+  lastStatusLine = key;
+  svc_status.set_status(text, error);
+}
+
 // Transport service
 const svc_transport = new RoonApiTransport(roon);
 
@@ -221,7 +267,7 @@ const svc_image = new RoonApiImage(roon);
 roon.init_services({
   required_services:  [RoonApiTransport],
   optional_services:  [RoonApiImage],
-  provided_services:  [svc_settings],
+  provided_services:  [svc_settings, svc_status],
 });
 
 // ---------------------------------------------------------------------------
@@ -256,6 +302,7 @@ function onCorePaired(core) {
 // ---------------------------------------------------------------------------
 poller.on("status", (status) => {
   currentStatus = status;
+  updateStatus();
 });
 
 poller.on("discLoaded", async (status) => {
@@ -281,12 +328,13 @@ poller.on("discEjected", async (_status) => {
 poller.on("offline", () => {
   console.warn("[cd] Backend offline — retrying...");
   currentStatus = null;
+  updateStatus();
 });
 
 // ---------------------------------------------------------------------------
 // Startup
 // ---------------------------------------------------------------------------
-console.log("[cd-player] Starting Roon CD Player Extension v1.0.0");
+console.log(`[cd-player] Starting CDPcore Roon extension v${PRODUCT_VERSION} (${EXTENSION_ID})`);
 console.log(`[cd-player] Backend: ${BACKEND_URL}`);
 console.log(`[cd-player] Settings: ${SETTINGS_PATH}`);
 
@@ -299,6 +347,7 @@ fs.watchFile(SETTINGS_PATH, { interval: 2000 }, () => {
     transport_mgr.setTargetZone(settings.zone_name);
     console.log(`[settings] Zone updated to: "${settings.zone_name}"`);
   }
+  updateStatus();
   if (svc_settings) svc_settings.update_settings(buildSettingsLayout(settings));
   console.log("[settings] Reloaded from disk");
 });

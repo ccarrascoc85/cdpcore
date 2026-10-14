@@ -16,6 +16,22 @@ Deployed appliances track tagged releases, not the `main` branch HEAD.
 
 ## [Unreleased]
 
+### Changed
+
+- The Roon extension presents itself as published by **CDPcore** instead of a
+  personal account name, reports the product version (read from
+  `backend/VERSION`) instead of a fixed `1.0.0`, and no longer sends an email
+  address to the Roon Core. Its id is unchanged, so an existing authorization
+  and the extension settings are kept.
+
+### Added
+
+- A status line for the Roon extension in Roon Settings -> Extensions, e.g.
+  `Disc loaded · <album> · zone: <zone>`, `Playing track 3 · ...`,
+  `Drive error`, or `Waiting for the CDPcore backend` when the backend is not
+  reachable. It shows the configured zone, so a missing zone is visible from
+  Roon. Adds the `node-roon-api-status` dependency (installed by the updater).
+
 ## [1.5.0] - 2026-10-12
 
 ### Changed
