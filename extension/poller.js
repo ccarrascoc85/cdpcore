@@ -109,14 +109,6 @@ class CDPoller {
     return [];
   }
 
-  async getDevices() {
-    try {
-      const resp = await fetch(`${BACKEND_URL}/devices`, { timeout: 2000 });
-      if (resp.ok) return resp.json();
-    } catch (_) {}
-    return [];
-  }
-
   async post(path) {
     try {
       const resp = await fetch(`${BACKEND_URL}${path}`, {
@@ -130,24 +122,6 @@ class CDPoller {
     return null;
   }
 
-  async selectDevice(deviceId) {
-    try {
-      const url = new URL(`${BACKEND_URL}/devices/select`);
-      url.searchParams.set("device_id", deviceId);
-      const resp = await fetch(url.toString(), {
-        method: "POST",
-        timeout: 5000,
-      });
-      if (resp.ok) return resp.json();
-    } catch (e) {
-      console.error("[poller] selectDevice failed:", e.message);
-    }
-    return null;
-  }
-
-  async rescanDevices() {
-    return this.post("/devices/rescan");
-  }
 }
 
 module.exports = CDPoller;

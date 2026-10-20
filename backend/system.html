@@ -164,6 +164,8 @@ body {
 .row-value.warm  { color: #d07830; }
 .row-value.hot   { color: var(--red); }
 #advanced-playback .row-label { flex-shrink: 1; }
+#audio-selector .row-label { flex-shrink: 1; min-width: 0; }
+#audio-choice { min-width: 0; max-width: 65%; }
 
 /* ── Bar ─────────────────────────────────────────────────── */
 .bar-wrap {
@@ -343,6 +345,17 @@ html.light .card-title { background: #d0ccc4; }
       <div class="row">
         <span class="row-label">Device</span>
         <span class="row-value" id="s-audio-name">&mdash;</span>
+      </div>
+      <div id="audio-selector" style="display:none">
+        <div class="row">
+          <label class="row-label" for="audio-choice">Preferred USB DAC</label>
+          <select class="btn-action" id="audio-choice" onchange="audioChoiceChanged()"></select>
+        </div>
+        <p style="padding:10px 12px;font-size:11px;color:var(--txt-mid)">Used when more than one USB DAC is connected</p>
+        <div class="actions">
+          <button class="btn-action full" id="audio-save" onclick="saveAudio()" disabled>Save</button>
+        </div>
+        <div class="row"><span class="row-value" id="audio-message" role="status"></span></div>
       </div>
     </div>
 
@@ -705,22 +718,31 @@ function apply(d) {
 /* ── Fetch ───────────────────────────────────────────────── */
 async function refreshAudio() {
   try {
-    const [statusResp, devicesResp] = await Promise.all([
+    const [statusResp, audioResp] = await Promise.all([
       fetch('/status'),
-      fetch('/devices'),
+      fetch('/system/audio'),
     ]);
-    if (!statusResp.ok || !devicesResp.ok) return;
+    if (!statusResp.ok || !audioResp.ok) throw new Error('Audio settings unavailable');
 
     const status = await statusResp.json();
     document.getElementById('playback-active').textContent = status.read_mode || 'continuous';
     document.getElementById('playback-muted').textContent = Number(status.read_errors) || 0;
     document.getElementById('playback-c2').textContent =
       status.c2_available === true ? (Number(status.c2_frames) || 0) : 'Not available';
-    const devices = await devicesResp.json();
-    const alsaId = status.alsa_device || '';
-    const selected = (devices || []).find(d => d.id === alsaId);
+    applyAudio(await audioResp.json());
+  } catch (e) {
+    document.getElementById('audio-message').textContent = e.message;
+  }
+}
+
+let audioChoiceDirty = false;
+let audioSaving = false;
+
+function applyAudio(data) {
+    const devices = data.devices || [];
+    const selected = devices.find(d => d.selected && d.is_usb);
     const selectedPresent = !!selected;
-    const audioState = status.audio_state || 'default';
+    const audioState = data.audio_state || 'default';
 
     let label = 'Detecting...';
     let sublabel = '\u2014';
@@ -732,7 +754,7 @@ async function refreshAudio() {
       color = 'var(--green)';
     } else if (audioState === 'usb_multiple') {
       label = 'Multiple DACs';
-      sublabel = selectedPresent ? ('Using: ' + (selected.name || selected.id)) : 'No active selection';
+      sublabel = selectedPresent ? ('Using: ' + (selected.name || selected.id)) : 'Choose the DAC to use below';
       color = selectedPresent ? 'var(--amber)' : 'var(--red)';
     } else if (audioState === 'no_usb') {
       label = 'No USB DAC';
@@ -748,7 +770,52 @@ async function refreshAudio() {
     stateEl.textContent = label;
     stateEl.style.color = color;
     document.getElementById('s-audio-name').textContent = sublabel;
-  } catch { /* keep last values */ }
+
+    const selector = document.getElementById('audio-selector');
+    selector.style.display = data.selectable ? '' : 'none';
+    if (!data.selectable) { audioChoiceDirty = false; return; }
+    const choice = document.getElementById('audio-choice');
+    const usb = devices.filter(d => d.is_usb);
+    const pending = choice.value;
+    const keepPending = audioChoiceDirty && usb.some(d => d.card_id === pending);
+    const wanted = keepPending ? pending : (selected ? selected.card_id : '');
+    if (!keepPending) audioChoiceDirty = false;
+    choice.replaceChildren(new Option('Choose a USB DAC', ''));
+    usb.forEach(d => choice.add(new Option((d.name || d.card_id) + ' (' + d.card_id + ')', d.card_id)));
+    choice.value = wanted;
+    document.getElementById('audio-save').disabled = audioSaving || !choice.value;
+}
+
+function audioChoiceChanged() {
+  audioChoiceDirty = true;
+  document.getElementById('audio-message').textContent = '';
+  document.getElementById('audio-save').disabled = audioSaving || !document.getElementById('audio-choice').value;
+}
+
+async function saveAudio() {
+  const choice = document.getElementById('audio-choice');
+  const button = document.getElementById('audio-save');
+  const message = document.getElementById('audio-message');
+  if (!choice.value) return;
+  audioSaving = true;
+  button.disabled = true;
+  choice.disabled = true;
+  try {
+    const r = await fetch('/system/audio/select', {
+      method: 'POST', headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({card_id: choice.value})
+    });
+    if (!r.ok) throw new Error('Could not save audio settings');
+    const data = await r.json();
+    audioChoiceDirty = false;
+    applyAudio(data);
+    message.textContent = 'Saved. Applies to the next playback start.';
+  } catch (e) { message.textContent = e.message; }
+  finally {
+    audioSaving = false;
+    choice.disabled = false;
+    button.disabled = !choice.value;
+  }
 }
 
 async function loadPlayback() {

@@ -52,11 +52,16 @@ const PRODUCT_VERSION = readProductVersion();
 // ---------------------------------------------------------------------------
 // Settings persistence
 // ---------------------------------------------------------------------------
+function cleanSettings(values) {
+  const current = { ...values };
+  delete current.alsa_device;
+  delete current.mb_lookup;
+  return current;
+}
+
 function loadSettings() {
   const defaults = {
     zone_name:       "",
-    alsa_device:     "",
-    mb_lookup:       true,
     pause_on_insert: false,
     pause_on_play:   true,
     resume_on_stop:  false,
@@ -64,7 +69,7 @@ function loadSettings() {
   };
   try {
     if (fs.existsSync(SETTINGS_PATH)) {
-      return { ...defaults, ...JSON.parse(fs.readFileSync(SETTINGS_PATH, "utf8")) };
+      return cleanSettings({ ...defaults, ...JSON.parse(fs.readFileSync(SETTINGS_PATH, "utf8")) });
     }
   } catch (e) {
     console.warn("[settings] Could not load settings:", e.message);
@@ -75,7 +80,7 @@ function loadSettings() {
 function saveSettings(s) {
   try {
     fs.mkdirSync(path.dirname(SETTINGS_PATH), { recursive: true });
-    fs.writeFileSync(SETTINGS_PATH, JSON.stringify(s, null, 2));
+    fs.writeFileSync(SETTINGS_PATH, JSON.stringify(cleanSettings(s), null, 2));
   } catch (e) {
     console.error("[settings] Could not save settings:", e.message);
   }
@@ -144,16 +149,9 @@ svc_settings = new RoonApiSettings(roon, {
     let l = buildSettingsLayout(s.values);
 
     if (!isdryrun && !has_error) {
-      settings = s.values;
+      settings = cleanSettings(s.values);
       saveSettings(settings);
       transport_mgr.setTargetZone(settings.zone_name);
-
-      // Apply ALSA device selection if changed
-      if (settings.alsa_device) {
-        poller.selectDevice(settings.alsa_device)
-          .then(() => poller.rescanDevices())
-          .catch((e) => console.error("[settings] Device selection failed:", e.message));
-      }
 
       svc_settings.update_settings(l);
     }
@@ -162,29 +160,13 @@ svc_settings = new RoonApiSettings(roon, {
 });
 
 function buildSettingsLayout(values) {
-  // Fetch device list synchronously-ish via cached data
   return {
-    values,
+    values: cleanSettings(values),
     layout: [
       {
         type: "group",
         title: "CDPcore Settings",
         items: [
-          {
-            type: "string",
-            title: "ALSA device override",
-            subtitle: "Leave blank for auto-detection (e.g. hw:1,0)",
-            setting: "alsa_device",
-          },
-          {
-            type: "dropdown",
-            title: "MusicBrainz metadata lookup",
-            values: [
-              { title: "Enabled", value: true },
-              { title: "Disabled", value: false },
-            ],
-            setting: "mb_lookup",
-          },
           {
             type: "dropdown",
             title: "Pause zone when disc is inserted",

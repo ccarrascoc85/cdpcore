@@ -27,6 +27,7 @@ import system_info
 import network as net_mgr
 
 import auth
+import audio_config
 import cd_reader
 import metadata
 import player
@@ -229,7 +230,8 @@ def _compute_audio_state(devices: list, alsa_device: str) -> str:
     return "no_usb"
 
 
-def _refresh_audio_devices(reason: str = "manual") -> dict:
+def _refresh_audio_devices(reason: str = "manual", *, select_card_id: str | None = None,
+                           forget_preferred: bool = False) -> dict:
     """Central entry point for all audio device refresh operations.
 
     Updates _alsa_devices, selects the best available device, updates
@@ -242,30 +244,70 @@ def _refresh_audio_devices(reason: str = "manual") -> dict:
     with _audio_lock:
         state = get_state()
         prev_device = state.alsa_device
+        prev_audio_state = state.audio_state
 
         new_devices = cd_reader.enumerate_alsa_devices()
-        _alsa_devices = new_devices
-
         usb_devices = [d for d in new_devices if d.get("is_usb")]
+        if select_card_id is not None:
+            matches = [d for d in usb_devices if d.get("card_id") == select_card_id]
+            if len(matches) != 1:
+                raise HTTPException(status_code=400, detail="Unknown or ambiguous USB card")
+            audio_config.set_preferred(matches[0])
+        elif forget_preferred:
+            audio_config.clear_preferred()
+        preferred = audio_config.get_preferred()
+        _alsa_devices = new_devices
         device_ids = {d["id"] for d in new_devices}
+        selection_reason = "no_usb"
 
         if len(usb_devices) == 1:
             state.alsa_device = usb_devices[0]["id"]
             state.audio_state = "usb_single"
+            selection_reason = "usb_single"
         elif len(usb_devices) == 0:
             if state.alsa_device not in device_ids and new_devices:
                 state.alsa_device = new_devices[0]["id"]
             state.audio_state = "no_usb" if new_devices else "device_missing"
         else:
-            # Multiple USB DACs require an explicit stable selection. Preserve
-            # the current value; never choose an arbitrary USB or internal output.
+            matches = []
+            if preferred:
+                if preferred.get("usb_id"):
+                    matches = [d for d in usb_devices
+                               if d.get("card_id") == preferred["card_id"]
+                               and d.get("usb_id") == preferred["usb_id"]]
+                if not matches:
+                    matches = [d for d in usb_devices
+                               if d.get("card_id") == preferred["card_id"]]
+            usb_by_id = {d["id"]: d for d in usb_devices}
+            # The current output counts only if it was a valid USB selection
+            # in the previous refresh. At startup it is the internal placeholder,
+            # so with several DACs and no stored preference nothing is chosen:
+            # USB enumeration order at boot is not stable, and picking the first
+            # DAC found would be arbitrary.
+            was_valid = (prev_device in usb_by_id
+                         and prev_audio_state in ("usb_single", "usb_multiple"))
+            if len(matches) == 1:
+                state.alsa_device = matches[0]["id"]
+                selection_reason = "preferred"
+            elif was_valid:
+                selection_reason = "kept_current"
+                if preferred is None and prev_audio_state == "usb_single" and not forget_preferred:
+                    # A second DAC was connected while one was in use: keep
+                    # what was playing and record it, so the choice no longer
+                    # depends on connection order.
+                    audio_config.set_preferred(usb_by_id[prev_device])
+                    selection_reason = "adopted_single"
+            else:
+                state.alsa_device = ""
+                selection_reason = "no_valid_usb_selection"
             state.audio_state = "usb_multiple"
 
         for d in new_devices:
             d["auto_selected"] = d["id"] == state.alsa_device
 
         if state.alsa_device != prev_device:
-            logger.info(f"[audio] device {prev_device!r} -> {state.alsa_device!r} (reason={reason})")
+            logger.info(f"[audio] device {prev_device!r} -> {state.alsa_device!r} "
+                        f"(reason={reason}, policy={selection_reason})")
 
         snapshot = {
             "alsa_device": state.alsa_device,
@@ -766,7 +808,7 @@ def _playback_device_ready() -> tuple[bool, str]:
         state = get_state()
         audio_state = state.audio_state
         alsa_device = state.alsa_device
-        device_ids = {d["id"] for d in _alsa_devices}
+        device_ids = {d["id"] for d in _alsa_devices if d.get("is_usb")}
 
     if audio_state == "device_missing":
         return False, "audio_device_missing"
@@ -1131,26 +1173,32 @@ async def audio_device_change(request: Request):
     return {"ok": True, "audio_state": snapshot["audio_state"], "alsa_device": snapshot["alsa_device"]}
 
 
-@app.post("/devices/select")
-def select_device(device_id: str):
-    global _audio_snapshot
+@app.get("/system/audio")
+def system_audio():
     with _audio_lock:
-        valid = device_id in {d["id"] for d in _alsa_devices}
-        if valid:
-            state = get_state()
-            state.alsa_device = device_id
-            for d in _alsa_devices:
-                d["auto_selected"] = d["id"] == device_id
-            state.audio_state = _compute_audio_state(_alsa_devices, device_id)
-            _audio_snapshot = {
-                "alsa_device": state.alsa_device,
-                "audio_state": state.audio_state,
-                "device_count": len(_alsa_devices),
-            }
-    if not valid:
-        raise HTTPException(status_code=400, detail=f"Unknown device: {device_id}")
-    _schedule_broadcast()
-    return {"ok": True, "selected": device_id}
+        state = get_state()
+        return {
+            "devices": [{**d, "selected": d["id"] == state.alsa_device}
+                        for d in _alsa_devices],
+            "audio_state": state.audio_state,
+            "preferred": audio_config.get_preferred(),
+            "selectable": sum(bool(d.get("is_usb")) for d in _alsa_devices) > 1,
+        }
+
+
+@app.post("/system/audio/select")
+def system_audio_select(body: dict):
+    card_id = body.get("card_id")
+    if not isinstance(card_id, str) or not card_id.strip():
+        raise HTTPException(status_code=400, detail="Supply a USB card_id")
+    _refresh_audio_devices("system_select", select_card_id=card_id)
+    return system_audio()
+
+
+@app.post("/system/audio/forget")
+def system_audio_forget():
+    _refresh_audio_devices("system_forget", forget_preferred=True)
+    return system_audio()
 
 
 # ---------------------------------------------------------------------------

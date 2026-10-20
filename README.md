@@ -210,10 +210,10 @@ The shipped READ CD timeout is 8000 ms. Factory retry count 128 is restored on
 startup, stop, eject, reader exceptions and shutdown. Device and sysfs queue
 resolution use /dev/cdrom, including after USB re-enumeration.
 
-Existing appliances must refresh system/cdpcore-backend.service (or reinstall)
-and reload systemd before saving playback settings: the unit grants a narrow
-writable exception for /home/cdplayer/.config/cdpcore-backend. A custom
-CDPCORE_CONFIG_DIR must likewise be writable under the service sandbox.
+Playback settings and audio preferences are stored in the backend config
+directory (/home/cdplayer/.config/cdpcore-backend), which the service can write
+with the standard unit. A custom CDPCORE_CONFIG_DIR must be writable by the
+service user as well.
 
 ### State machine
 
@@ -279,7 +279,7 @@ A separate administrative surface at `http://cdpcore.local:8000/system` provides
 - **Admin Settings** - admin PIN change and auth-mode change (`PIN` or explicit `LAN-Trust`)
 - **Advanced playback** - read mode (continuous / recovery), gap treatment (mirror / silence) and live
   counters of concealed and C2-interpolated frames (collapsed by default)
-- **Audio** - current audio device state (USB DAC / Multiple DACs / No USB DAC / Audio device missing) with the selected DAC name when applicable, updated automatically
+- **Audio** - current audio device state (USB DAC / Multiple DACs / No USB DAC / Audio device missing) with the selected DAC name, updated automatically. When several USB DACs are connected, choose and save a preferred output using the admin PIN
 - **Updates** - operator-initiated update checks and release updates from the latest tagged GitHub Release
 - **Backend Logs** - last 150 lines of the backend service journal, with a refresh button
 - **Actions** - restart backend, restart all, reboot Pi, power off Pi
@@ -583,14 +583,22 @@ Configure the extension behaviour in Settings -> Extensions -> CDPcore -> Settin
 | Setting | Default | Description |
 |---------|---------|-------------|
 | Roon Zone | - | Name of the zone connected to your USB DAC |
-| ALSA device override | _(auto)_ | Leave blank for auto-detection |
-| MusicBrainz lookup | On | Enable/disable MusicBrainz metadata |
 | Pause zone when disc is inserted | **Off** | Pause the zone as soon as a disc is detected |
 | Pause zone when CD plays | **On** | Pause the zone when playback starts |
 | Resume zone after CD stops | **Off** | Resume the zone when Stop is pressed |
 | Resume zone after disc is ejected | **Off** | Resume the zone when the disc is ejected |
 
 Settings are persisted at `/home/cdplayer/.config/cdpcore-extension/settings.json`.
+Legacy `alsa_device` and `mb_lookup` keys are ignored and dropped on the next save.
+Output selection belongs to the system page. A previous DAC choice in Roon is not
+migrated; with several DACs connected, choose once on the system page.
+The backend saves the preference in `audio.conf` under `CDPCORE_CONFIG_DIR`
+(default `~/.config/cdpcore-backend`), using `card_id` and, when available, `usb_id`
+instead of a changing `hw:N,0` index. A single connected USB DAC is always used;
+the preference remains stored and applies again when several DACs are connected.
+With several DACs and no stored choice, none is picked: the listening page shows
+`SELECT DAC` and play is refused until one is chosen. Only cards that can play
+audio count; a USB webcam or microphone is not treated as a DAC.
 
 ---
 
@@ -639,15 +647,17 @@ CDPcore exposes a REST API and WebSocket interface, enabling integration with ex
 | POST | `/prev` | Previous track within 5 s; restart current track after 5 s |
 | POST | `/eject` | Stop and eject disc |
 | GET | `/cover` | Cover art image (JPEG, cached locally) |
-| GET | `/devices` | List ALSA devices with auto-selection info |
+| GET | `/devices` | List ALSA devices with card_id, optional usb_id and auto-selection info |
 | POST | `/devices/rescan` | Re-enumerate ALSA devices (diagnostic; runtime detection is automatic) |
-| POST | `/devices/select?device_id=hw:2,0` | Select ALSA output device |
 | POST | `/audio/device-change` | udev webhook - sound card add/remove (called by `audio-device-change.sh`) |
 | POST | `/cd/inserted` | udev webhook - disc inserted |
 | POST | `/cd/ejected` | udev webhook - disc ejected |
 | GET | `/health` | Health check |
 | GET | `/system` | System management page (HTML shell - open; its data endpoints are gated) |
 | GET | `/system/info` | System metrics JSON (CPU, memory, disk, network, services) - admin-gated |
+| GET | `/system/audio` | Devices with selected flags, audio_state, preferred output and selectable (more than one USB DAC) - admin-gated |
+| POST | `/system/audio/select` | Persist and apply a present USB output using JSON {"card_id":"E50"}; next playback start - admin-gated |
+| POST | `/system/audio/forget` | Clear the preferred output and reapply selection policy; keep a present current USB output - admin-gated |
 | GET | `/system/playback/config` | Persisted read mode and gap treatment, plus effective read mode - admin-gated |
 | POST | `/system/playback/config` | Save read_mode (continuous/recovery) and/or gap_treatment (mirror/silence); next segment - admin-gated |
 | GET | `/system/playback/status` | Live muted/C2 frame counters, C2 availability and active mode - admin-gated |
@@ -701,7 +711,7 @@ CDPcore exposes a REST API and WebSocket interface, enabling integration with ex
 - `buffering` - `true` while mpv is spinning up before first audio output (VFD shows STARTING)
 - `alsa_device` - currently selected ALSA device id used by the next playback start
 - `error` - `null`, or `drive_stalled` when the last play attempt failed because the optical drive stopped answering during bounded CDDA reads (the status line shows DRIVE ERROR; state returns to `loaded`, cleared on the next play attempt or disc change)
-- `audio_state` - one of `usb_single`, `usb_multiple`, `no_usb`, `device_missing`, `default`. `/play` and `/play/{n}` return HTTP 409 when the state is `device_missing`, `no_usb`, or `usb_multiple` with `alsa_device` no longer in the device list. The appliance requires a valid USB DAC for playback; there is no fallback to the Pi internal audio output
+- `audio_state` - one of `usb_single`, `usb_multiple`, `no_usb`, `device_missing`, `default`. `/play` and `/play/{n}` return HTTP 409 when the state is `device_missing`, `no_usb`, or `usb_multiple` without a present USB selection (`audio_device_ambiguous`). With several USB DACs, the stored preference is matched by usb_id + card_id, then card_id alone; otherwise a present current USB output is kept. Choose on the system page if no valid selection remains. The appliance requires a valid USB DAC for playback; there is no fallback to the Pi internal audio output
 
 ---
 
@@ -718,6 +728,7 @@ cdpcore/
 |   |-- player.py            Raw PCM segments, mpv process lifecycle + IPC control
 |   |-- cdda_source.py       TOC, SG_IO, salvage, adaptive lookahead and concealment
 |   |-- playback_config.py   Persistent playback policy
+|   |-- audio_config.py      Persistent preferred USB output
 |   |-- state.py             In-memory state machine (IDLE/LOADED/PLAYING/PAUSED)
 |   |-- system_info.py       System metrics (CPU, memory, disk, network, services)
 |   |-- admin_gate.js        Frontend admin-session gate for appliance pages
@@ -807,7 +818,8 @@ curl http://localhost:8000/devices
 curl http://localhost:8000/status | python3 -m json.tool
 # audio_state should be "usb_single" with a single USB DAC connected
 # audio_state "usb_multiple" with no valid selection causes /play to return 409
-# Use POST /devices/select?device_id=hw:N,0 to pick one explicitly
+# Open /system, unlock with the admin PIN, and save a preferred USB DAC
+# The choice survives reboots and changing hw:N,0 indexes
 
 # Verify the udev path is wired up
 sudo journalctl -u cdpcore-backend -f | grep "[audio]"

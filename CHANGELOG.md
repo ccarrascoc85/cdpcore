@@ -18,6 +18,7 @@ Deployed appliances track tagged releases, not the `main` branch HEAD.
 
 ### Changed
 
+- Roon extension settings are reduced to the zone and pause/resume policy.
 - The Roon extension presents itself as published by **CDPcore** instead of a
   personal account name, reports the product version (read from
   `backend/VERSION`) instead of a fixed `1.0.0`, and no longer sends an email
@@ -26,11 +27,32 @@ Deployed appliances track tagged releases, not the `main` branch HEAD.
 
 ### Added
 
+- USB output choice on the system page when several DACs are connected,
+  persisted by stable ALSA card identity in audio.conf and protected by the
+  admin PIN. A single connected USB DAC is always used automatically.
+- Output selection with several USB DACs no longer depends on connection order.
+  At startup with several DACs and no stored choice, none is picked and the
+  listening page shows `SELECT DAC` until one is chosen; when a second DAC is
+  connected while one is playing, the one in use is kept and recorded as the
+  choice. Unplugging the chosen DAC blocks play until it returns or another is
+  chosen; it is used again as soon as it is plugged back in.
+- Only sound cards that can play audio count as outputs: a capture-only USB
+  device (a webcam or microphone) no longer triggers the several-DACs state.
 - A status line for the Roon extension in Roon Settings -> Extensions, e.g.
   `Disc loaded · <album> · zone: <zone>`, `Playing track 3 · ...`,
   `Drive error`, or `Waiting for the CDPcore backend` when the backend is not
   reachable. It shows the configured zone, so a missing zone is visible from
   Roon. Adds the `node-roon-api-status` dependency (installed by the updater).
+
+### Removed
+
+- Open `POST /devices/select`; output configuration uses the admin-gated
+  `/system/audio/select` and `/system/audio/forget` routes instead.
+- The Roon extension's ALSA device override and unused MusicBrainz lookup toggle.
+  Legacy settings files still load; these keys are dropped on the next save.
+
+Upgrade note: a DAC choice made in Roon is not migrated. With several DACs,
+choose the preferred output once on the system page.
 
 ## [1.5.0] - 2026-10-12
 

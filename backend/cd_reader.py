@@ -369,6 +369,12 @@ def _parse_proc_asound_cards() -> List[dict]:
         driver = m.group(3).strip()
         long_name = m.group(4).strip()
 
+        # Only cards that can play audio are outputs. A USB webcam or a
+        # microphone registers a capture-only card; counting it as a DAC would
+        # put the appliance in "multiple DACs" for no reason.
+        if not _card_has_playback(index):
+            continue
+
         # Check USB by looking at the usb device symlink or driver name
         is_usb = _is_card_usb(index, driver)
 
@@ -380,6 +386,19 @@ def _parse_proc_asound_cards() -> List[dict]:
             "is_usb": is_usb,
         })
     return cards
+
+
+def _card_has_playback(card_index: int) -> bool:
+    """True unless the card's procfs directory is readable and lists no
+    playback PCM (pcmNp). Unknown means playback-capable."""
+    try:
+        entries = os.listdir(f"/proc/asound/card{card_index}")
+    except OSError:
+        return True
+    pcms = [e for e in entries if e.startswith("pcm")]
+    if not pcms:
+        return True
+    return any(e.endswith("p") for e in pcms)
 
 
 def _is_card_usb(card_index: int, driver: str) -> bool:
@@ -419,10 +438,18 @@ def enumerate_alsa_devices() -> List[dict]:
         device_id = f"hw:{card['index']},0"
         devices.append({
             "id": device_id,
+            "card_id": card["short_name"],
             "name": card["long_name"],
             "is_usb": card["is_usb"],
             "auto_selected": False,
         })
+        if card["is_usb"]:
+            try:
+                usb_id = Path(f"/proc/asound/card{card['index']}/usbid").read_text().strip()
+                if usb_id:
+                    devices[-1]["usb_id"] = usb_id
+            except (OSError, UnicodeError):
+                pass
 
     # Auto-select logic
     if len(usb_devices) == 1:
@@ -430,11 +457,11 @@ def enumerate_alsa_devices() -> List[dict]:
         for d in devices:
             if d["id"] == f"hw:{selected_index},0":
                 d["auto_selected"] = True
-        logger.info(f"Auto-selected USB audio device: hw:{selected_index},0 ({usb_devices[0]['long_name']})")
+        logger.debug(f"Single USB audio device: hw:{selected_index},0 ({usb_devices[0]['long_name']})")
     elif len(usb_devices) > 1:
-        logger.warning("Multiple USB audio devices found — manual selection required")
+        logger.debug("Multiple USB audio devices found; selection is applied by the backend policy")
     else:
-        logger.warning("No USB audio devices found — falling back to default ALSA device")
+        logger.debug("No USB audio devices found")
         if devices:
             devices[0]["auto_selected"] = True
 
