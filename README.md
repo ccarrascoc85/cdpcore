@@ -134,9 +134,10 @@ The speed a drive actually settles at is decided by its firmware: some go to
 1x, many slim USB drives stay at their own minimum of about 4-5x. The backend
 therefore measures the real read throughput right after the request and
 shows it on the system page as **Minimum read speed** (the reference
-HL-DT-ST GP30NB20 reports 4.2x). Audio is always consumed in real time, so
-the drive reads in short bursts and idles between them at any speed; a lower
-minimum only means less mechanical noise.
+HL-DT-ST GP30NB20 reports about 4x). Audio is consumed in real time, so above
+1x the drive reads in short bursts and idles between them. A lower speed means
+less mechanical noise; whether it also reads damaged discs better depends on
+the drive.
 
 mpv uses a 1 s raw-audio cache with a 352,800-byte demuxer limit. The reader
 normally keeps 2 s of lookahead, growing to 20 s when C2 pointers, slow reads
