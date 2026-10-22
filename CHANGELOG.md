@@ -16,6 +16,8 @@ Deployed appliances track tagged releases, not the `main` branch HEAD.
 
 ## [Unreleased]
 
+## [1.6.0] - 2026-10-22
+
 ### Changed
 
 - Roon extension settings are reduced to the zone and pause/resume policy.
